@@ -566,6 +566,32 @@ async function readJson(request, maxBytes = MAX_JSON_BYTES) {
     error.statusCode = 413;
     throw error;
   }
+
+  if (request.body && typeof request.body.getReader === "function") {
+    const reader = request.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        const error = new Error("Payload too large");
+        error.statusCode = 413;
+        throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error("Invalid JSON");
+    }
+  }
+
   const text = await request.text();
   const size = new TextEncoder().encode(text).length;
   if (size > maxBytes) {
@@ -576,7 +602,7 @@ async function readJson(request, maxBytes = MAX_JSON_BYTES) {
   if (!text) return {};
   try {
     return JSON.parse(text);
-  } catch (error) {
+  } catch {
     throw new Error("Invalid JSON");
   }
 }
@@ -752,7 +778,9 @@ function validatePayload(payload) {
     }
     : null;
 
-  if (!request) {
+  const hasAutoFixContext = pageErrors.length > 0
+    || (conversionDialog && (conversionDialog.title || conversionDialog.description));
+  if (!request && !hasAutoFixContext) {
     return { ok: false, error: "'request' is required" };
   }
   if (request.length > MAX_REQUEST_CHARS) {
@@ -1893,6 +1921,18 @@ export function createBackendRuntime(options = {}) {
         }
 
         const sessionToken = session && session.token ? String(session.token) : "";
+        let providerConfig;
+        try {
+          providerConfig = await resolveProviderConfigForSession(session);
+        } catch (error) {
+          if (error && Number.isFinite(error.statusCode)) {
+            return respondJson(error.statusCode, {
+              error: error.message || "Request failed"
+            }, origin, runtimeConfig);
+          }
+          throw error;
+        }
+
         const reservation = await rateLimits.reserveGenerate({
           sessionToken,
           classroomId
@@ -1904,7 +1944,6 @@ export function createBackendRuntime(options = {}) {
 
         try {
           await usageStore.recordAcceptedGeneration(classroomId || "legacy");
-          const providerConfig = await resolveProviderConfigForSession(session);
           const result = await generateManaged(
             validated.value,
             runtimeConfig,

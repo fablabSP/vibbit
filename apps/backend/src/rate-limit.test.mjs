@@ -385,3 +385,78 @@ test("P1-06A: classroom daily quota is isolated per classroom", async () => {
   assert.equal(allowedB.ok, true);
   allowedB.release();
 });
+
+test("reserveGenerate rolls back counters when persistDailyUsage rejects", async () => {
+  let failPersist = true;
+  const controller = createRateLimitController({
+    VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "100",
+    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "100",
+    VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
+    VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
+  }, {
+    persistDailyUsage: async () => {
+      if (failPersist) {
+        failPersist = false;
+        throw new Error("disk full");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => controller.reserveGenerate({
+      sessionToken: "session-rollback",
+      classroomId: "cls_rate_a"
+    }),
+    /disk full/
+  );
+  assert.equal(controller.getClassroomDayUsage("cls_rate_a"), 0);
+
+  const afterFailure = await controller.reserveGenerate({
+    sessionToken: "session-after-rollback",
+    classroomId: "cls_rate_a"
+  });
+  assert.equal(afterFailure.ok, true);
+  afterFailure.release();
+});
+
+test("revoked classroom session does not consume daily generate quota", async () => {
+  const rateLimits = createRateLimitController({
+    VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "100",
+    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "3",
+    VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
+    VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
+  });
+
+  const runtime = createBackendRuntime({
+    env: {
+      VIBBIT_DEPLOYMENT_MODE: "self-hosted",
+      VIBBIT_CLASSROOM_ENABLED: "true",
+      VIBBIT_CLASSROOM_CODE: "LEGACY",
+      VIBBIT_CLASSROOM_CODE_AUTO: "false",
+      VIBBIT_TEACHER_DEV_LOGIN: "true",
+      VIBBIT_OPENAI_API_KEY: "server-fallback-key",
+      VIBBIT_PROVIDER: "openai",
+      VIBBIT_MODEL: "gpt-4o-mini"
+    },
+    teacherPortalState: seededPortalState({
+      cls_rate_a: seededClassroomA
+    }),
+    persistTeacherPortalState: async () => {},
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }],
+    rateLimits
+  });
+
+  const connect = await connectWithCode(runtime, "RATEA");
+  assert.equal(connect.status, 200);
+  const { sessionToken } = await connect.json();
+
+  await runtime.teacherPortal.store.updateClassroom(seededTeacher.id, "cls_rate_a", {
+    enabled: false
+  });
+
+  const generate = await generateWithSession(runtime, sessionToken);
+  assert.equal(generate.status, 401);
+  assert.equal(rateLimits.getClassroomDayUsage("cls_rate_a"), 0);
+});

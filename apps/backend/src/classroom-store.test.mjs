@@ -144,3 +144,29 @@ test("deleteCredentialProfile blocks teacher defaults and classroom references",
     /Reassign classrooms/
   );
 });
+
+test("updateCredentialProfile clears apiKey when provider changes and submitted key is blank", async () => {
+  const store = createTeacherPortalStore({
+    teachers: {
+      [teacherA.id]: teacherA
+    },
+    credentialProfiles: {
+      cp_openai: {
+        id: "cp_openai",
+        teacherId: teacherA.id,
+        name: "OpenAI profile",
+        provider: "openai",
+        apiKey: "sk-openai",
+        defaultModel: "gpt-4o-mini",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  const updated = await store.updateCredentialProfile(teacherA.id, "cp_openai", {
+    provider: "gemini"
+  });
+  assert.equal(updated.provider, "gemini");
+  assert.equal(updated.apiKey, "");
+});

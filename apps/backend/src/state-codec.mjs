@@ -3,7 +3,7 @@
  * Runtime always sees plaintext; disk sees envelopes when a key is configured.
  */
 
-import { createSecretBox, isEncryptedEnvelope } from "./secret-box.mjs";
+import { createSecretBox } from "./secret-box.mjs";
 
 function cloneJson(value) {
   return structuredClone(value);
@@ -91,7 +91,9 @@ export function createStateCodec(envInput = {}, secretBox = createSecretBox(envI
       : [];
     const profileNeedsMigration = credentialProfiles.some((profile) => {
       const key = profile && profile.apiKey ? String(profile.apiKey) : "";
-      return Boolean(key) && !isEncryptedEnvelope(key);
+      if (!key) return false;
+      const aad = credentialProfileKeyAad(profile.id);
+      return !secretBox.isValidEnvelope(key, aad);
     });
     if (profileNeedsMigration) return true;
 
@@ -100,17 +102,20 @@ export function createStateCodec(envInput = {}, secretBox = createSecretBox(envI
       : [];
     return classrooms.some((classroom) => {
       const key = classroom && classroom.apiKey ? String(classroom.apiKey) : "";
-      return Boolean(key);
+      if (!key) return false;
+      const aad = classroomKeyAad(classroom.id);
+      return !secretBox.isValidEnvelope(key, aad);
     });
   }
 
   function adminProviderNeedsMigration(input) {
     const apiKeys = input && input.apiKeys && typeof input.apiKeys === "object"
-      ? Object.values(input.apiKeys)
+      ? Object.entries(input.apiKeys)
       : [];
-    return apiKeys.some((value) => {
+    return apiKeys.some(([provider, value]) => {
       const key = String(value || "");
-      return Boolean(key) && !isEncryptedEnvelope(key);
+      if (!key) return false;
+      return !secretBox.isValidEnvelope(key, adminProviderKeyAad(provider));
     });
   }
 

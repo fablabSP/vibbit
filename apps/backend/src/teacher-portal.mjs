@@ -182,6 +182,7 @@ function buildGoogleAuthUrl({ clientId, redirectUri, state }) {
 async function exchangeGoogleCode({ clientId, clientSecret, redirectUri, code }) {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
+    signal: AbortSignal.timeout(15_000),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
@@ -199,6 +200,7 @@ async function exchangeGoogleCode({ clientId, clientSecret, redirectUri, code })
 
 async function fetchGoogleUserInfo(accessToken) {
   const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    signal: AbortSignal.timeout(15_000),
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   if (!response.ok) {
@@ -712,12 +714,34 @@ function renderDashboardPage({
   return teacherShell({ title: "Teacher portal", body, notice, error });
 }
 
+const MAX_FORM_BODY_BYTES = 64 * 1024;
+
 async function readFormBody(request) {
+  const contentLength = Number(request.headers.get("content-length") || "");
+  if (Number.isFinite(contentLength) && contentLength > MAX_FORM_BODY_BYTES) {
+    const error = new Error("Form body too large");
+    error.statusCode = 413;
+    throw error;
+  }
   const contentType = String(request.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("application/json")) {
-    return request.json();
+    const text = await request.text();
+    const size = new TextEncoder().encode(text).length;
+    if (size > MAX_FORM_BODY_BYTES) {
+      const error = new Error("Form body too large");
+      error.statusCode = 413;
+      throw error;
+    }
+    if (!text) return {};
+    return JSON.parse(text);
   }
   const text = await request.text();
+  const size = new TextEncoder().encode(text).length;
+  if (size > MAX_FORM_BODY_BYTES) {
+    const error = new Error("Form body too large");
+    error.statusCode = 413;
+    throw error;
+  }
   const params = new URLSearchParams(text);
   const body = {};
   for (const [key, value] of params.entries()) {
@@ -766,6 +790,20 @@ export function createTeacherPortal({
   });
   const sessions = createTeacherSessionStore();
   const oauthStates = new Map();
+  const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+  const MAX_OAUTH_STATES = 1000;
+
+  const pruneOAuthStates = () => {
+    const ts = Date.now();
+    for (const [state, entry] of oauthStates.entries()) {
+      if (!entry || ts - entry.createdAt > OAUTH_STATE_TTL_MS) oauthStates.delete(state);
+    }
+    while (oauthStates.size > MAX_OAUTH_STATES) {
+      const oldest = oauthStates.keys().next().value;
+      if (oldest == null) break;
+      oauthStates.delete(oldest);
+    }
+  };
 
   const validateCustomEndpointUrl = async (provider, customBaseUrl) => {
     if (normaliseCredentialProvider(provider) !== "custom") return "";
@@ -930,6 +968,7 @@ export function createTeacherPortal({
       if (!google.enabled) {
         return redirectResponse("/teacher?error=Google%20sign-in%20is%20not%20configured", { corsHeaders });
       }
+      pruneOAuthStates();
       const state = bytesToBase64Url(randomBytes(18));
       oauthStates.set(state, { createdAt: Date.now() });
       const redirectUri = resolveRedirectUri(publicOrigin);
@@ -960,6 +999,11 @@ export function createTeacherPortal({
         const cookies = parseCookies(request.headers.get("cookie"));
         const expectedState = cookies[OAUTH_STATE_COOKIE];
         if (!code || !state || !expectedState || state !== expectedState || !oauthStates.has(state)) {
+          throw new Error("Invalid OAuth state");
+        }
+        const oauthEntry = oauthStates.get(state);
+        if (!oauthEntry || Date.now() - oauthEntry.createdAt > OAUTH_STATE_TTL_MS) {
+          oauthStates.delete(state);
           throw new Error("Invalid OAuth state");
         }
         oauthStates.delete(state);
@@ -1114,13 +1158,15 @@ export function createTeacherPortal({
           throw new Error("Credential profile not found");
         }
         const profileInput = await buildProfileInput(body, existingProfile);
+        const providerChanged = body.provider != null
+          && normaliseCredentialProvider(body.provider) !== normaliseCredentialProvider(existingProfile.provider);
         if (action === "test") {
           const draftProfile = {
             ...existingProfile,
             ...profileInput,
             apiKey: profileInput.apiKey != null && String(profileInput.apiKey).trim()
               ? profileInput.apiKey
-              : existingProfile.apiKey
+              : (providerChanged ? "" : existingProfile.apiKey)
           };
           try {
             await testCredentialProfileConnection(draftProfile, { outboundUrlPolicy });

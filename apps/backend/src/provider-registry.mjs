@@ -117,7 +117,7 @@ export async function callManagedProvider({
   if (!key) throw new Error("Missing API key");
 
   if (selectedProvider === "gemini") {
-    const url = `${GEMINI_API_ROOT}/models/${encodeURIComponent(selectedModel)}:generateContent?key=${encodeURIComponent(key)}`;
+    const url = `${GEMINI_API_ROOT}/models/${encodeURIComponent(selectedModel)}:generateContent`;
     const body = {
       contents: [{ role: "user", parts: [{ text: `${String(system || "")}\n\n${String(user || "")}` }] }],
       generationConfig: {
@@ -128,7 +128,10 @@ export async function callManagedProvider({
     const response = await fetchImpl(url, {
       method: "POST",
       signal,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key
+      },
       body: JSON.stringify(body)
     });
     if (!response.ok) {

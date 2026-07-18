@@ -28,6 +28,7 @@ export function createUsageStore({
   // shape: { [classroomId]: { [yyyy-mm-dd]: bucket } }
   let state = sanitiseUsageState(initialState);
   let writeChain = Promise.resolve();
+  let dirty = false;
 
   function dayKey(ts = now()) {
     return utcDayKey(new Date(ts));
@@ -42,7 +43,16 @@ export function createUsageStore({
 
   function schedulePersist() {
     if (typeof persist !== "function") return Promise.resolve();
-    writeChain = writeChain.then(() => persist(structuredClone(state))).catch(() => {});
+    dirty = true;
+    writeChain = writeChain.then(async () => {
+      try {
+        await persist(structuredClone(state));
+        dirty = false;
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.error(`[Vibbit usage-store] Failed to persist usage state: ${message}`);
+      }
+    });
     return writeChain;
   }
 

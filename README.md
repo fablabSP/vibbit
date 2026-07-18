@@ -32,7 +32,7 @@ This repo ships one Vibbit runtime supporting both:
   - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
-- Teacher classrooms accept any OpenAI-compatible base URL (OpenAI, OpenRouter, LiteLLM, Claude-compatible proxies).
+- Teacher classrooms accept any OpenAI-compatible base URL (OpenAI, OpenRouter, LiteLLM, Claude-compatible proxies). The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
   - optional managed overrides: `provider`, `model`

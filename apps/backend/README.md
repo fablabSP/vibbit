@@ -36,7 +36,7 @@ The backend keeps provider API keys server-side and proxies generation requests 
 ## Teacher portal
 
 1. Open `/teacher`
-2. Sign in with Google (set `VIBBIT_GOOGLE_CLIENT_ID` + `VIBBIT_GOOGLE_CLIENT_SECRET`), or use local email login when `VIBBIT_TEACHER_DEV_LOGIN` is enabled (default when Google is unset)
+2. Sign in with Google (set `VIBBIT_GOOGLE_CLIENT_ID` + `VIBBIT_GOOGLE_CLIENT_SECRET`), or use local email login when `VIBBIT_TEACHER_DEV_LOGIN` is enabled (default `false`; set `true` for local dev when Google is unset)
 3. Add:
    - API base URL (for example `https://api.openai.com/v1` or a LiteLLM URL like `http://localhost:4000/v1`)
    - API key
@@ -48,7 +48,7 @@ Each teacher can mint multiple classrooms. Codes can be rotated or deleted from 
 ## Admin panel (operator)
 
 - Open `/admin?admin=<ADMINTOKEN>`
-- On startup, backend logs the admin URL with token.
+- On startup, the backend logs the admin panel URL with the token redacted.
 - Optional: set `VIBBIT_ADMIN_TOKEN` to provide a fixed admin token.
 
 The operator panel still supports a shared fallback provider config for legacy single-code classrooms.
@@ -190,7 +190,14 @@ Teacher portal:
 
 - `VIBBIT_GOOGLE_CLIENT_ID` / `VIBBIT_GOOGLE_CLIENT_SECRET` (Google OAuth)
 - `VIBBIT_GOOGLE_REDIRECT_URI` (optional; default `{origin}/teacher/auth/google/callback`)
-- `VIBBIT_TEACHER_DEV_LOGIN` (default `true` when Google is unset; set `false` to require Google)
+- `VIBBIT_TEACHER_DEV_LOGIN` (default `false`; set `true` for local dev when Google is unset)
+
+Hosted deployment (required):
+
+- `VIBBIT_DEPLOYMENT_MODE=hosted`
+- `VIBBIT_PUBLIC_ORIGIN` (canonical HTTPS origin)
+- `VIBBIT_CREDENTIAL_ENCRYPTION_KEY` (32-byte base64/base64url)
+- `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST` (optional comma list for teacher custom gateways beyond built-in providers)
 
 Classroom auth:
 

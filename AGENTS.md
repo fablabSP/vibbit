@@ -49,22 +49,22 @@ Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet link
 ### Managed mode
 
 - Classroom auth flow:
- - Teachers sign in at `{BACKEND}/teacher`, save an OpenAI-compatible API key + base URL, and mint a classroom code
- - Students enter backend URL + class code in Vibbit
- - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
- - Generation uses that session token on `POST {BACKEND}/vibbit/generate` (routed with the classroom’s key/URL)
+  - Teachers sign in at `{BACKEND}/teacher`, save an OpenAI-compatible API key + base URL, and mint a classroom code
+  - Students enter backend URL + class code in Vibbit
+  - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
+  - Generation uses that session token on `POST {BACKEND}/vibbit/generate` (routed with the classroom's key/URL)
 - Endpoints:
- - `GET {BACKEND}/` (informational landing page)
- - `GET {BACKEND}/healthz`
- - `GET {BACKEND}/teacher` (teacher portal)
- - `GET {BACKEND}/admin` (`?admin=<ADMINTOKEN>` operator panel)
- - `GET {BACKEND}/admin/status`
- - `GET {BACKEND}/download/vibbit-extension.zip`
- - `GET {BACKEND}/bookmarklet`
- - `GET {BACKEND}/bookmarklet/runtime.js`
- - `GET {BACKEND}/vibbit/config`
- - `POST {BACKEND}/vibbit/connect`
- - `POST {BACKEND}/vibbit/generate`
+  - `GET {BACKEND}/` (informational landing page)
+  - `GET {BACKEND}/healthz`
+  - `GET {BACKEND}/teacher` (teacher portal)
+  - `GET {BACKEND}/admin` (`?admin=<ADMINTOKEN>` operator panel)
+  - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/download/vibbit-extension.zip`
+  - `GET {BACKEND}/bookmarklet`
+  - `GET {BACKEND}/bookmarklet/runtime.js`
+  - `GET {BACKEND}/vibbit/config`
+  - `POST {BACKEND}/vibbit/connect`
+  - `POST {BACKEND}/vibbit/generate`
 - Legacy optional app token:
   - `APP_TOKEN` (Bearer token, only for `SERVER_APP_TOKEN` mode)
 - Payload supports:

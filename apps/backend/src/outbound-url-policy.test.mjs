@@ -110,6 +110,13 @@ test("rejects localhost and metadata hostnames", async () => {
   }
 });
 
+test("link-local fe80::/10 range is blocked via first hextet mask", () => {
+  assert.equal(isBlockedIpAddress("fe80::1"), true);
+  assert.equal(isBlockedIpAddress("fe90::1"), true);
+  assert.equal(isBlockedIpAddress("febf::1"), true);
+  assert.equal(isBlockedIpAddress("fec0::1"), false);
+});
+
 test("rejects private and metadata IP literals", async () => {
   const policy = createOutboundUrlPolicy(selfHostedEnv(), { dnsLookup: publicDnsLookup });
   const blockedUrls = [

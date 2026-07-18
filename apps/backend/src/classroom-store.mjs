@@ -520,13 +520,15 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     const existing = ensureTeacherOwnsProfile(teacherId, profileId);
     if (!teacher || !existing) throw new Error("Credential profile not found");
     const provider = normaliseCredentialProvider(input.provider || existing.provider);
+    const providerChanged = input.provider != null
+      && normaliseCredentialProvider(input.provider) !== normaliseCredentialProvider(existing.provider);
     const profile = sanitiseCredentialProfile({
       ...existing,
       name: input.name != null ? input.name : existing.name,
       provider,
       apiKey: input.apiKey != null && String(input.apiKey).trim()
         ? input.apiKey
-        : existing.apiKey,
+        : (providerChanged ? "" : existing.apiKey),
       customBaseUrl: provider === "custom"
         ? (input.customBaseUrl != null ? input.customBaseUrl : existing.customBaseUrl)
         : "",

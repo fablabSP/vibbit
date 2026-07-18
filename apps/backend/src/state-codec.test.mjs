@@ -133,8 +133,28 @@ test("state-codec: teacherPortalNeedsMigration is true for plaintext profile key
 
   assert.equal(codec.teacherPortalNeedsMigration(plaintextProfileState), true);
   assert.equal(codec.teacherPortalNeedsMigration(encryptedProfileState), false);
-  assert.equal(codec.teacherPortalNeedsMigration(legacyClassroomState), true);
+  assert.equal(codec.teacherPortalNeedsMigration(legacyClassroomState), false);
   assert.equal(codec.adminProviderNeedsMigration({ apiKeys: {} }), false);
+});
+
+test("state-codec: plaintext v1. prefix still needs migration", () => {
+  const codec = createStateCodec({
+    VIBBIT_DEPLOYMENT_MODE: "self-hosted",
+    VIBBIT_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY_B64
+  });
+  const state = {
+    credentialProfiles: {
+      cp_v1: {
+        id: "cp_v1",
+        teacherId: "local:teacher@school.edu",
+        apiKey: "v1.looks-like-envelope-but-is-plaintext"
+      }
+    }
+  };
+
+  assert.equal(codec.teacherPortalNeedsMigration(state), true);
+  const encrypted = codec.encryptTeacherPortalState(state);
+  assert.equal(codec.teacherPortalNeedsMigration(encrypted), false);
 });
 
 test("createDeploymentPolicy: hosted mode rejects missing encryption key", () => {

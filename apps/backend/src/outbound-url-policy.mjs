@@ -100,7 +100,8 @@ function isBlockedIpv6(ip) {
   if (normalised === "0000:0000:0000:0000:0000:0000:0000:0000") return true;
   if (normalised === "0000:0000:0000:0000:0000:0000:0000:0001") return true;
   if (normalised.startsWith("fc") || normalised.startsWith("fd")) return true;
-  if (normalised.startsWith("fe80:")) return true;
+  const firstHextet = Number.parseInt(normalised.slice(0, 4), 16);
+  if (Number.isFinite(firstHextet) && (firstHextet & 0xffc0) === 0xfe80) return true;
   if (normalised.startsWith("ff")) return true;
   // IPv4-mapped IPv6 (::ffff:a.b.c.d or ::ffff:xxxx:yyyy)
   const dotted = normalised.match(/^0000:0000:0000:0000:0000:ffff:(\d+\.\d+\.\d+\.\d+)$/);
@@ -140,6 +141,8 @@ function addressFamily(ip) {
   if (version === 6) return 6;
   return 0;
 }
+
+const MAX_PINNED_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * Fetch that pins DNS to addresses validated at policy time (mitigates DNS rebinding).
@@ -195,8 +198,18 @@ export function fetchWithPinnedAddresses(url, init = {}, pinnedAddresses = []) {
       lookup,
       signal: init.signal
     }, (response) => {
+      let totalBytes = 0;
       const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("data", (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_PINNED_RESPONSE_BYTES) {
+          request.destroy();
+          response.destroy();
+          reject(new Error("Response body too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.on("end", () => {
         const buffer = Buffer.concat(chunks);
         resolve(new Response(buffer, {
@@ -205,6 +218,7 @@ export function fetchWithPinnedAddresses(url, init = {}, pinnedAddresses = []) {
           headers: response.headers
         }));
       });
+      response.on("error", reject);
     });
     request.on("error", reject);
     if (body) request.write(body);

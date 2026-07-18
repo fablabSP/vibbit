@@ -73,6 +73,11 @@ function tryDecryptValidEnvelope(value, key, expectedAad) {
   }
 }
 
+export function isValidEncryptedEnvelope(value, key, aad = "") {
+  if (!key || key.length !== KEY_BYTES) return false;
+  return tryDecryptValidEnvelope(value, key, aad) != null;
+}
+
 export function encryptSecret(plaintext, key, aad = "") {
   const value = String(plaintext ?? "");
   if (!value) return "";
@@ -82,7 +87,7 @@ export function encryptSecret(plaintext, key, aad = "") {
 
   // Idempotent only for *valid* envelopes for this key+AAD.
   // Plaintext that merely starts with "v1." is always encrypted.
-  if (isEncryptedEnvelope(value) && tryDecryptValidEnvelope(value, key, aad) != null) {
+  if (isValidEncryptedEnvelope(value, key, aad)) {
     return value;
   }
 
@@ -168,6 +173,9 @@ export function createSecretBox(envInput = {}) {
   return {
     isHosted,
     hasKey: Boolean(key),
+    isValidEnvelope(value, aad) {
+      return isValidEncryptedEnvelope(value, key, aad);
+    },
     encrypt(plaintext, aad) {
       if (!key) return String(plaintext ?? "");
       return encryptSecret(plaintext, key, aad);

@@ -2,6 +2,8 @@
  * Token-bucket rate limits, daily classroom quotas, and concurrency gates.
  */
 
+const BUCKET_IDLE_MS = 60 * 60 * 1000;
+
 function parseInteger(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -62,6 +64,7 @@ export function createRateLimitController(envInput = {}, {
 } = {}) {
   const config = createRateLimitConfig(envInput);
   const buckets = new Map();
+  const bucketLastAccess = new Map();
   const classroomDayCounts = new Map();
   const classroomInFlight = new Map();
   let globalInFlight = 0;
@@ -73,7 +76,23 @@ export function createRateLimitController(envInput = {}, {
     }
   }
 
+  function pruneOnAccess() {
+    const ts = now();
+    const today = utcDayKey(new Date(ts));
+    for (const key of classroomDayCounts.keys()) {
+      if (!key.startsWith(`${today}:`)) classroomDayCounts.delete(key);
+    }
+    for (const [key, lastAccess] of bucketLastAccess.entries()) {
+      if (ts - lastAccess > BUCKET_IDLE_MS) {
+        bucketLastAccess.delete(key);
+        buckets.delete(key);
+      }
+    }
+  }
+
   function bucket(key, capacity, perMinute) {
+    pruneOnAccess();
+    bucketLastAccess.set(key, now());
     if (!buckets.has(key)) {
       buckets.set(key, createTokenBucket({
         capacity,
@@ -183,7 +202,15 @@ export function createRateLimitController(envInput = {}, {
       classroomDayCounts.set(dayKey, used + 1);
       classroomInFlight.set(classroomId || "legacy", inFlight + 1);
       globalInFlight += 1;
-      await persistDayCounts();
+      try {
+        await persistDayCounts();
+      } catch (error) {
+        if (used === 0) classroomDayCounts.delete(dayKey);
+        else classroomDayCounts.set(dayKey, used);
+        classroomInFlight.set(classroomId || "legacy", inFlight);
+        globalInFlight = Math.max(0, globalInFlight - 1);
+        throw error;
+      }
 
       let released = false;
       return {
@@ -199,8 +226,7 @@ export function createRateLimitController(envInput = {}, {
     },
 
     getClassroomDayUsage(classroomId) {
-      const dayKey = dayCountKey(classroomId);
-      return classroomDayCounts.get(dayKey) || 0;
+      return classroomDayCounts.get(dayCountKey(classroomId)) || 0;
     }
   };
 }

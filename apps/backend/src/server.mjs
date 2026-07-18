@@ -15,7 +15,7 @@ function readStateFile(filePath) {
   try {
     const raw = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
     throw new Error("State file did not contain a JSON object");
   } catch (error) {
     if (error && error.code === "ENOENT") return {};
@@ -78,11 +78,15 @@ try {
 }
 
 let usageState = sanitiseUsageState(persistedState.usageState || {});
+let dailyUsage = persistedState.dailyUsage && typeof persistedState.dailyUsage === "object"
+  ? persistedState.dailyUsage
+  : {};
 
 function buildPersistedSnapshot({
   nextAdminProviderState = adminProviderState,
   nextTeacherPortalState = teacherPortalState,
-  nextUsageState = usageState
+  nextUsageState = usageState,
+  nextDailyUsage = dailyUsage
 } = {}) {
   return {
     version: STATE_SCHEMA_VERSION,
@@ -92,7 +96,8 @@ function buildPersistedSnapshot({
     teacherPortalState: stateCodec.encryptTeacherPortalState(
       sanitiseTeacherPortalState(nextTeacherPortalState)
     ),
-    usageState: sanitiseUsageState(nextUsageState)
+    usageState: sanitiseUsageState(nextUsageState),
+    dailyUsage: nextDailyUsage && typeof nextDailyUsage === "object" ? nextDailyUsage : {}
   };
 }
 
@@ -147,6 +152,16 @@ const runtime = createBackendRuntime({
       nextAdminProviderState: adminProviderState,
       nextTeacherPortalState: teacherPortalState,
       nextUsageState: usageState
+    }));
+  },
+  loadDailyUsage: () => dailyUsage,
+  persistDailyUsage: async (snapshot) => {
+    dailyUsage = snapshot && typeof snapshot === "object" ? snapshot : {};
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState,
+      nextDailyUsage: dailyUsage
     }));
   }
 });
@@ -232,7 +247,7 @@ server.listen(PORT, () => {
   const lines = runtime.getStartupInfo({ listenUrl });
   for (const line of lines) console.log(line);
   if (runtime.config.deployment && runtime.config.deployment.adminPanelEnabled) {
-    console.log(`[Vibbit backend] Admin panel -> URL: ${listenUrl}/admin?admin=${adminAuthToken}`);
+    console.log(`[Vibbit backend] Admin panel -> ${listenUrl}/admin?admin=<redacted>`);
   }
   console.log(`[Vibbit backend] State file=${STATE_FILE}`);
   console.log(

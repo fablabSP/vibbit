@@ -6,6 +6,8 @@
 import { createHash, randomBytes } from "node:crypto";
 
 const TOKEN_TTL_MS = 15 * 60 * 1000;
+const OUTBOUND_FETCH_TIMEOUT_MS = 15_000;
+const MAX_REQUEST_COUNTS = 10_000;
 
 function normaliseEmail(value) {
   return String(value || "").trim().toLowerCase().slice(0, 320);
@@ -44,7 +46,20 @@ export function createMagicLinkAuth(envInput = {}, {
     }
   };
 
+  const pruneRequestCounts = () => {
+    const ts = now();
+    for (const [key, entry] of requestCounts.entries()) {
+      if (!entry || entry.resetAt <= ts) requestCounts.delete(key);
+    }
+    while (requestCounts.size > MAX_REQUEST_COUNTS) {
+      const oldest = requestCounts.keys().next().value;
+      if (oldest == null) break;
+      requestCounts.delete(oldest);
+    }
+  };
+
   const rateLimit = (key, limit, windowMs) => {
+    pruneRequestCounts();
     const ts = now();
     const current = requestCounts.get(key);
     if (!current || current.resetAt <= ts) {
@@ -60,6 +75,7 @@ export function createMagicLinkAuth(envInput = {}, {
     if (resendKey) {
       const response = await fetch("https://api.resend.com/emails", {
         method: "POST",
+        signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
         headers: {
           Authorization: `Bearer ${resendKey}`,
           "Content-Type": "application/json"
