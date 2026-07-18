@@ -5,10 +5,11 @@ import { dirname, resolve } from "node:path";
 import { createBackendRuntime } from "./runtime.mjs";
 import { sanitiseTeacherPortalState } from "./classroom-store.mjs";
 import { createStateCodec } from "./state-codec.mjs";
+import { sanitiseUsageState } from "./usage-store.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_FILE = resolve(process.env.VIBBIT_STATE_FILE || ".vibbit-backend-state.json");
-const STATE_SCHEMA_VERSION = 3;
+const STATE_SCHEMA_VERSION = 4;
 
 function readStateFile(filePath) {
   try {
@@ -67,9 +68,12 @@ try {
   process.exit(1);
 }
 
+let usageState = sanitiseUsageState(persistedState.usageState || {});
+
 function buildPersistedSnapshot({
   nextAdminProviderState = adminProviderState,
-  nextTeacherPortalState = teacherPortalState
+  nextTeacherPortalState = teacherPortalState,
+  nextUsageState = usageState
 } = {}) {
   return {
     version: STATE_SCHEMA_VERSION,
@@ -78,7 +82,8 @@ function buildPersistedSnapshot({
     adminProviderState: stateCodec.encryptAdminProviderState(nextAdminProviderState),
     teacherPortalState: stateCodec.encryptTeacherPortalState(
       sanitiseTeacherPortalState(nextTeacherPortalState)
-    )
+    ),
+    usageState: sanitiseUsageState(nextUsageState)
   };
 }
 
@@ -110,18 +115,29 @@ const runtime = createBackendRuntime({
   adminAuthToken,
   adminProviderState,
   teacherPortalState,
+  usageState,
   persistAdminProviderState: async (nextAdminProviderState) => {
     adminProviderState = nextAdminProviderState;
     persistSnapshot(buildPersistedSnapshot({
       nextAdminProviderState,
-      nextTeacherPortalState: teacherPortalState
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState
     }));
   },
   persistTeacherPortalState: async (nextTeacherPortalState) => {
     teacherPortalState = nextTeacherPortalState;
     persistSnapshot(buildPersistedSnapshot({
       nextAdminProviderState: adminProviderState,
-      nextTeacherPortalState
+      nextTeacherPortalState,
+      nextUsageState: usageState
+    }));
+  },
+  persistUsageState: async (nextUsageState) => {
+    usageState = sanitiseUsageState(nextUsageState);
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState
     }));
   }
 });

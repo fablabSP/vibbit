@@ -49,7 +49,7 @@ test("normaliseApiBaseUrl adds /v1 for OpenAI-compatible and LiteLLM roots", () 
   assert.equal(normaliseApiBaseUrl("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1");
 });
 
-test("teacher can sign in locally, mint a classroom, and students can connect", async () => {
+test("teacher can sign in locally, create a credential profile, mint a classroom, and students can connect", async () => {
   const runtime = createClassroomRuntime();
 
   const login = await followTeacherForm(runtime, "/teacher/dev-login", {
@@ -59,11 +59,23 @@ test("teacher can sign in locally, mint a classroom, and students can connect", 
   assert.equal(login.response.status, 303);
   assert.match(login.cookieHeader, /vibbit_teacher_session=/);
 
+  const createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
+    name: "School OpenAI",
+    provider: "openai",
+    apiKey: "sk-teacher-key",
+    defaultModel: "gpt-4o-mini",
+    makeDefault: "1"
+  }, login.cookieHeader);
+  assert.equal(createProfile.response.status, 303);
+
+  const profile = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:teacher@school.edu")[0];
+  assert.ok(profile);
+  assert.equal(profile.name, "School OpenAI");
+
   const mint = await followTeacherForm(runtime, "/teacher/classrooms", {
     name: "Period 3",
-    apiBaseUrl: "https://api.openai.com/v1",
-    apiKey: "sk-teacher-key",
-    model: "gpt-4o-mini"
+    credentialProfileId: profile.id,
+    modelOverride: ""
   }, login.cookieHeader);
   assert.equal(mint.response.status, 303);
 
@@ -72,6 +84,8 @@ test("teacher can sign in locally, mint a classroom, and students can connect", 
   }));
   assert.equal(dashboard.status, 200);
   const html = await dashboard.text();
+  assert.match(html, /Credentials/);
+  assert.match(html, /School OpenAI/);
   assert.match(html, /Period 3/);
   assert.match(html, /Classroom code:/);
   const codeMatch = html.match(/class="code code-lg">([A-Z]{5})</);
@@ -109,7 +123,7 @@ test("legacy class code still connects when teacher classrooms exist", async () 
   assert.ok(body.sessionToken);
 });
 
-test("teacher classroom generate uses classroom base URL and API key", async () => {
+test("legacy classroom generate uses the migrated credential profile base URL and API key", async () => {
   const runtime = createClassroomRuntime({
     teachers: {
       "local:teacher@school.edu": {
@@ -146,6 +160,12 @@ test("teacher classroom generate uses classroom base URL and API key", async () 
   }));
   const connected = await connect.json();
   assert.equal(connect.status, 200);
+  const classroom = runtime.teacherPortal.store.getClassroom("cls_demo");
+  const profile = runtime.teacherPortal.store.getEffectiveCredentialProfileForClassroom(classroom);
+  assert.ok(profile);
+  assert.equal(classroom.apiKey, "");
+  assert.equal(profile.customBaseUrl, "https://litellm.example/v1");
+  assert.equal(profile.apiKey, "sk-classroom");
 
   const originalFetch = globalThis.fetch;
   let seenUrl = "";

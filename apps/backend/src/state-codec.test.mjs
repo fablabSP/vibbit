@@ -6,6 +6,7 @@ import { isEncryptedEnvelope } from "./secret-box.mjs";
 import {
   adminProviderKeyAad,
   classroomKeyAad,
+  credentialProfileKeyAad,
   createStateCodec
 } from "./state-codec.mjs";
 
@@ -38,30 +39,52 @@ function assertThrowsMessage(fn, message) {
   });
 }
 
-test("state-codec: teacher classroom apiKey encrypt/decrypt uses classroom AAD", () => {
+test("state-codec: credential profile apiKey encrypt/decrypt uses profile AAD", () => {
   const codec = createStateCodec({
     VIBBIT_DEPLOYMENT_MODE: "self-hosted",
     VIBBIT_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY_B64
   });
-  const classroomId = "cls_teacher_01";
+  const profileId = "cp_teacher_01";
   const plaintextState = {
-    classrooms: {
-      [classroomId]: {
-        id: classroomId,
+    credentialProfiles: {
+      [profileId]: {
+        id: profileId,
+        teacherId: "local:teacher@school.edu",
         apiKey: "sk-teacher-classroom"
       }
     }
   };
 
   const encrypted = codec.encryptTeacherPortalState(plaintextState);
-  const storedKey = encrypted.classrooms[classroomId].apiKey;
+  const storedKey = encrypted.credentialProfiles[profileId].apiKey;
 
   assert.ok(isEncryptedEnvelope(storedKey));
   assert.equal(
-    codec.decryptTeacherPortalState(encrypted).classrooms[classroomId].apiKey,
+    codec.decryptTeacherPortalState(encrypted).credentialProfiles[profileId].apiKey,
     "sk-teacher-classroom"
   );
-  assert.equal(classroomKeyAad(classroomId), `classroom:${classroomId}:apiKey`);
+  assert.equal(credentialProfileKeyAad(profileId), `credentialProfile:${profileId}:apiKey`);
+});
+
+test("state-codec: legacy classroom apiKey still decrypts with classroom AAD", () => {
+  const codec = createStateCodec({
+    VIBBIT_DEPLOYMENT_MODE: "self-hosted",
+    VIBBIT_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY_B64
+  });
+  const classroomId = "cls_teacher_01";
+  const encryptedState = {
+    classrooms: {
+      [classroomId]: {
+        id: classroomId,
+        apiKey: codec.secretBox.encrypt("sk-legacy-classroom", classroomKeyAad(classroomId))
+      }
+    }
+  };
+
+  assert.equal(
+    codec.decryptTeacherPortalState(encryptedState).classrooms[classroomId].apiKey,
+    "sk-legacy-classroom"
+  );
 });
 
 test("state-codec: adminProvider apiKeys encrypt/decrypt per provider AAD", () => {
@@ -84,23 +107,33 @@ test("state-codec: adminProvider apiKeys encrypt/decrypt per provider AAD", () =
   assert.equal(adminProviderKeyAad("openai"), "adminProvider:openai:apiKey");
 });
 
-test("state-codec: teacherPortalNeedsMigration is true for plaintext classroom keys", () => {
+test("state-codec: teacherPortalNeedsMigration is true for plaintext profile keys and legacy classroom keys", () => {
   const codec = createStateCodec({
     VIBBIT_DEPLOYMENT_MODE: "self-hosted",
     VIBBIT_CREDENTIAL_ENCRYPTION_KEY: TEST_KEY_B64
   });
-  const plaintextState = {
-    classrooms: {
-      cls_plain: {
-        id: "cls_plain",
+  const plaintextProfileState = {
+    credentialProfiles: {
+      cp_plain: {
+        id: "cp_plain",
+        teacherId: "local:teacher@school.edu",
         apiKey: "sk-still-plaintext"
       }
     }
   };
-  const encryptedState = codec.encryptTeacherPortalState(plaintextState);
+  const encryptedProfileState = codec.encryptTeacherPortalState(plaintextProfileState);
+  const legacyClassroomState = {
+    classrooms: {
+      cls_plain: {
+        id: "cls_plain",
+        apiKey: codec.secretBox.encrypt("sk-legacy", classroomKeyAad("cls_plain"))
+      }
+    }
+  };
 
-  assert.equal(codec.teacherPortalNeedsMigration(plaintextState), true);
-  assert.equal(codec.teacherPortalNeedsMigration(encryptedState), false);
+  assert.equal(codec.teacherPortalNeedsMigration(plaintextProfileState), true);
+  assert.equal(codec.teacherPortalNeedsMigration(encryptedProfileState), false);
+  assert.equal(codec.teacherPortalNeedsMigration(legacyClassroomState), true);
   assert.equal(codec.adminProviderNeedsMigration({ apiKeys: {} }), false);
 });
 

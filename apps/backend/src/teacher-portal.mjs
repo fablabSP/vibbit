@@ -2,9 +2,15 @@ import {
   createTeacherId,
   createTeacherPortalStore,
   normaliseApiBaseUrl,
-  sanitiseTeacherPortalState,
-  TEACHER_PORTAL_DEFAULTS
+  sanitiseTeacherPortalState
 } from "./classroom-store.mjs";
+import {
+  callManagedProvider,
+  CREDENTIAL_PROFILE_PROVIDERS,
+  defaultModelForCredentialProvider,
+  normaliseCredentialProvider,
+  providerDisplayName
+} from "./provider-registry.mjs";
 
 const TEACHER_SESSION_COOKIE = "vibbit_teacher_session";
 const OAUTH_STATE_COOKIE = "vibbit_oauth_state";
@@ -342,6 +348,63 @@ function teacherShell({ title, body, notice = "", error = "" }) {
 </html>`;
 }
 
+function renderCredentialProviderOptions(selectedProvider = "openai") {
+  const current = normaliseCredentialProvider(selectedProvider);
+  return CREDENTIAL_PROFILE_PROVIDERS.map((provider) => {
+    const selected = provider === current ? " selected" : "";
+    return `<option value="${escapeHtml(provider)}"${selected}>${escapeHtml(providerDisplayName(provider))}</option>`;
+  }).join("");
+}
+
+function renderCredentialProfileOptions({
+  credentialProfiles,
+  selectedProfileId = "",
+  defaultProfileId = ""
+}) {
+  const selectedId = String(selectedProfileId || "").trim();
+  const defaultId = String(defaultProfileId || "").trim();
+  const defaultProfile = credentialProfiles.find((profile) => profile.id === defaultId) || null;
+  const items = [
+    `<option value="">Teacher default${defaultProfile ? ` — ${escapeHtml(defaultProfile.name)}` : " — not set"}</option>`
+  ];
+  for (const profile of credentialProfiles) {
+    const selected = profile.id === selectedId ? " selected" : "";
+    const suffix = profile.id === defaultId ? " (teacher default)" : "";
+    items.push(
+      `<option value="${escapeHtml(profile.id)}"${selected}>${escapeHtml(profile.name)} — ${escapeHtml(profile.providerLabel)}${escapeHtml(suffix)}</option>`
+    );
+  }
+  return items.join("");
+}
+
+function withTimeout(promise, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return promise(controller.signal).finally(() => clearTimeout(timeoutId));
+}
+
+async function testCredentialProfileConnection(profile) {
+  const provider = normaliseCredentialProvider(profile && profile.provider);
+  const apiKey = String((profile && profile.apiKey) || "").trim();
+  const defaultModel = String((profile && profile.defaultModel) || "").trim()
+    || defaultModelForCredentialProvider(provider);
+  const customBaseUrl = String((profile && profile.customBaseUrl) || "").trim();
+  if (!apiKey) throw new Error("Credential profile is missing an API key");
+  if (provider === "custom" && !customBaseUrl) {
+    throw new Error("Custom provider requires a custom base URL");
+  }
+  return withTimeout((signal) => callManagedProvider({
+    provider,
+    apiKey,
+    model: defaultModel,
+    system: "You are testing API credentials. Reply with OK.",
+    user: "Reply with OK.",
+    signal,
+    customBaseUrl,
+    maxTokens: 32
+  }), 12000);
+}
+
 function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = "", error = "" }) {
   const googleBlock = googleEnabled
     ? `<p><a class="btn" href="/teacher/auth/google">Continue with Google</a></p>`
@@ -371,7 +434,7 @@ function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = 
     <div class="top">
       <div>
         <h1>Teacher portal</h1>
-        <p>Sign in, add an OpenAI-compatible API key, and mint a classroom code for your students.</p>
+        <p>Sign in, save credential profiles, and mint classroom codes for your students.</p>
       </div>
       <a class="btn secondary" href="/">Back to Vibbit</a>
     </div>
@@ -394,10 +457,68 @@ function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = 
 function renderDashboardPage({
   teacher,
   classrooms,
+  credentialProfiles,
   publicOrigin,
   notice = "",
   error = ""
 }) {
+  const defaultProfile = credentialProfiles.find((profile) => profile.isDefault) || null;
+  const canMintClassroom = credentialProfiles.length > 0;
+  const classroomProfileOptions = renderCredentialProfileOptions({
+    credentialProfiles,
+    defaultProfileId: teacher.defaultCredentialProfileId
+  });
+  const profileCards = credentialProfiles.length
+    ? credentialProfiles.map((profile) => `
+      <div class="panel">
+        <div class="classroom-meta">
+          <strong>${escapeHtml(profile.name)}</strong>
+          <div class="hint">Provider: <code>${escapeHtml(profile.providerLabel)}</code> · Default model: <code>${escapeHtml(profile.defaultModel)}</code> · Key: ${profile.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
+          <div class="hint">${profile.isDefault ? "Teacher default" : "Not the teacher default"} · Used by ${escapeHtml(profile.usageCount)} classroom${profile.usageCount === 1 ? "" : "s"}</div>
+          ${profile.provider === "custom"
+            ? `<div class="hint">Custom base URL: <code>${escapeHtml(profile.customBaseUrl || "Not set")}</code></div>`
+            : `<div class="hint">Endpoint is fixed for ${escapeHtml(profile.providerLabel)}.</div>`}
+          ${profile.lastTestedAt
+            ? `<div class="hint">Last tested: ${escapeHtml(profile.lastTestedAt)} · ${profile.lastTestOk ? "passed" : "failed"}</div>`
+            : ""}
+        </div>
+        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}" data-profile-form>
+          <label>Profile name
+            <input type="text" name="name" value="${escapeHtml(profile.name)}" maxlength="120" required />
+          </label>
+          <label>Provider
+            <select name="provider" data-provider-select>
+              ${renderCredentialProviderOptions(profile.provider)}
+            </select>
+          </label>
+          <label>Default model
+            <input type="text" name="defaultModel" value="${escapeHtml(profile.defaultModel)}" maxlength="160" required />
+          </label>
+          <label>API key ${profile.hasApiKey ? "(leave blank to keep the saved key)" : ""}
+            <input type="password" name="apiKey" autocomplete="off" placeholder="${profile.hasApiKey ? "••••••••" : "sk-..."}" />
+          </label>
+          <details data-advanced-details ${profile.provider === "custom" ? "open" : ""}>
+            <summary>Advanced</summary>
+            <label data-custom-base-url-row>Custom base URL
+              <input type="url" name="customBaseUrl" value="${escapeHtml(profile.customBaseUrl)}" placeholder="https://your-gateway.example/v1" />
+            </label>
+            <p class="hint">Only custom profiles use a custom base URL. Built-in providers use fixed endpoints.</p>
+          </details>
+          <label class="row" style="display:flex;gap:0.5rem;align-items:center;">
+            <input type="checkbox" name="makeDefault" value="1" ${profile.isDefault ? "checked" : ""} style="width:auto" />
+            Use as teacher default
+          </label>
+          <div class="actions row">
+            <button type="submit">Save profile</button>
+            <button type="submit" class="secondary" formaction="/teacher/profiles/${escapeHtml(profile.id)}/test">Test key</button>
+          </div>
+        </form>
+        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}/delete" class="actions" onsubmit="return confirm('Delete this credential profile?');">
+          <button type="submit" class="danger">Delete profile</button>
+        </form>
+      </div>
+    `).join("")
+    : `<div class="panel"><p>No credential profiles yet. Create one below before minting classrooms.</p></div>`;
   const classroomCards = classrooms.length
     ? classrooms.map((classroom) => `
       <div class="panel">
@@ -405,20 +526,29 @@ function renderDashboardPage({
           <strong>${escapeHtml(classroom.name)}</strong>
           <div>Classroom code: <span class="code code-lg">${escapeHtml(classroom.code)}</span></div>
           <div class="hint">Students enter URL <code>${escapeHtml(publicOrigin)}</code> + this code in Vibbit Managed mode.</div>
-          <div class="hint">Endpoint: <code>${escapeHtml(classroom.apiBaseUrl)}</code> · Model: <code>${escapeHtml(classroom.model)}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
+          <div class="hint">Credential profile: <code>${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}</code>${classroom.usingTeacherDefault ? " (teacher default)" : ""} · Provider: <code>${escapeHtml(classroom.resolvedProviderLabel || "Not set")}</code> · Model: <code>${escapeHtml(classroom.resolvedModel || "Not set")}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
+          ${classroom.resolvedCustomBaseUrl
+            ? `<div class="hint">Custom base URL: <code>${escapeHtml(classroom.resolvedCustomBaseUrl)}</code></div>`
+            : ""}
+          ${classroom.usage
+            ? `<div class="hint">Today: ${escapeHtml(classroom.usage.acceptedGenerations)} generations · ${escapeHtml(classroom.usage.connects)} connects · ${escapeHtml(classroom.usage.rateLimited)} rate-limited</div>`
+            : ""}
         </div>
         <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}">
           <label>Classroom name
             <input type="text" name="name" value="${escapeHtml(classroom.name)}" maxlength="120" required />
           </label>
-          <label>API base URL (OpenAI-compatible)
-            <input type="url" name="apiBaseUrl" value="${escapeHtml(classroom.apiBaseUrl)}" required />
+          <label>Credential profile
+            <select name="credentialProfileId">
+              ${renderCredentialProfileOptions({
+                credentialProfiles,
+                selectedProfileId: classroom.credentialProfileId,
+                defaultProfileId: teacher.defaultCredentialProfileId
+              })}
+            </select>
           </label>
-          <label>API key ${classroom.hasApiKey ? "(leave blank to keep current)" : ""}
-            <input type="password" name="apiKey" autocomplete="off" placeholder="${classroom.hasApiKey ? "••••••••" : "sk-..."}" />
-          </label>
-          <label>Model
-            <input type="text" name="model" value="${escapeHtml(classroom.model)}" required />
+          <label>Model override (optional)
+            <input type="text" name="modelOverride" value="${escapeHtml(classroom.modelOverride || "")}" maxlength="160" placeholder="Leave blank to use the profile default" />
           </label>
           <label class="row" style="display:flex;gap:0.5rem;align-items:center;">
             <input type="checkbox" name="enabled" value="1" ${classroom.enabled ? "checked" : ""} style="width:auto" />
@@ -457,29 +587,89 @@ function renderDashboardPage({
       <p>Classroom code: the 5-letter code from a classroom below</p>
     </div>
 
+    <h2>Credentials</h2>
+    ${profileCards}
+
+    <div class="panel">
+      <h2>Create a credential profile</h2>
+      <form method="post" action="/teacher/profiles" data-profile-form>
+        <label>Profile name
+          <input type="text" name="name" value="School default" maxlength="120" required />
+        </label>
+        <label>Provider
+          <select name="provider" data-provider-select>
+            ${renderCredentialProviderOptions("openai")}
+          </select>
+        </label>
+        <label>Default model
+          <input type="text" name="defaultModel" value="${escapeHtml(defaultModelForCredentialProvider("openai"))}" maxlength="160" required />
+        </label>
+        <label>API key
+          <input type="password" name="apiKey" autocomplete="off" required placeholder="sk-..." />
+        </label>
+        <details data-advanced-details>
+          <summary>Advanced</summary>
+          <label data-custom-base-url-row style="display:none;">
+            Custom base URL
+            <input type="url" name="customBaseUrl" value="" placeholder="https://your-gateway.example/v1" />
+          </label>
+          <p class="hint">Only custom profiles use a custom base URL. Built-in providers use fixed endpoints.</p>
+        </details>
+        <label class="row" style="display:flex;gap:0.5rem;align-items:center;">
+          <input type="checkbox" name="makeDefault" value="1" ${defaultProfile ? "" : "checked"} style="width:auto" />
+          Use as teacher default
+        </label>
+        <div class="actions row">
+          <button type="submit">Create profile</button>
+        </div>
+      </form>
+    </div>
+
     <h2>Your classrooms</h2>
     ${classroomCards}
 
     <div class="panel">
       <h2>Mint a classroom</h2>
-      <form method="post" action="/teacher/classrooms">
-        <label>Classroom name
-          <input type="text" name="name" value="My class" maxlength="120" required />
-        </label>
-        <label>API base URL (OpenAI / Claude-compatible / LiteLLM)
-          <input type="url" name="apiBaseUrl" value="${escapeHtml(TEACHER_PORTAL_DEFAULTS.DEFAULT_OPENAI_BASE_URL)}" required />
-        </label>
-        <label>API key
-          <input type="password" name="apiKey" autocomplete="off" required placeholder="sk-..." />
-        </label>
-        <label>Model
-          <input type="text" name="model" value="${escapeHtml(TEACHER_PORTAL_DEFAULTS.DEFAULT_MODEL)}" required />
-        </label>
-        <div class="actions row">
-          <button type="submit">Mint classroom code</button>
-        </div>
-      </form>
+      ${canMintClassroom
+        ? `
+          <form method="post" action="/teacher/classrooms">
+            <label>Classroom name
+              <input type="text" name="name" value="My class" maxlength="120" required />
+            </label>
+            <label>Credential profile
+              <select name="credentialProfileId">
+                ${classroomProfileOptions}
+              </select>
+            </label>
+            <label>Model override (optional)
+              <input type="text" name="modelOverride" value="" maxlength="160" placeholder="Leave blank to use the profile default" />
+            </label>
+            <div class="actions row">
+              <button type="submit">Mint classroom code</button>
+            </div>
+          </form>
+        `
+        : `<p>Create a credential profile first, then mint classrooms that use it.</p>`}
     </div>
+
+    <script>
+      (function () {
+        for (const form of document.querySelectorAll("[data-profile-form]")) {
+          const select = form.querySelector("[data-provider-select]");
+          const details = form.querySelector("[data-advanced-details]");
+          const customRow = form.querySelector("[data-custom-base-url-row]");
+          const sync = function () {
+            const isCustom = !!select && select.value === "custom";
+            if (customRow) customRow.style.display = isCustom ? "grid" : "none";
+            if (details && isCustom) details.open = true;
+          };
+          if (select) {
+            select.addEventListener("change", sync);
+            sync();
+          }
+        }
+      }());
+    </script>
   `;
 
   return teacherShell({ title: "Teacher portal", body, notice, error });
@@ -527,7 +717,8 @@ export function createTeacherPortal({
   persistState,
   respondCorsHeaders = () => ({}),
   deploymentPolicy = null,
-  outboundUrlPolicy = null
+  outboundUrlPolicy = null,
+  usageStore = null
 } = {}) {
   const google = resolveGoogleConfig(env, deploymentPolicy);
   const store = createTeacherPortalStore(sanitiseTeacherPortalState(initialState), {
@@ -536,15 +727,38 @@ export function createTeacherPortal({
   const sessions = createTeacherSessionStore();
   const oauthStates = new Map();
 
-  const validateEndpointUrl = async (apiBaseUrl) => {
-    if (!outboundUrlPolicy || typeof outboundUrlPolicy.assertSafeUrl !== "function") {
-      return normaliseApiBaseUrl(apiBaseUrl);
+  const validateCustomEndpointUrl = async (provider, customBaseUrl) => {
+    if (normaliseCredentialProvider(provider) !== "custom") return "";
+    if (!String(customBaseUrl || "").trim()) {
+      throw new Error("Custom provider requires a custom base URL");
     }
-    const normalised = normaliseApiBaseUrl(apiBaseUrl);
+    const normalised = normaliseApiBaseUrl(customBaseUrl);
+    if (!outboundUrlPolicy || typeof outboundUrlPolicy.assertSafeUrl !== "function") {
+      return normalised;
+    }
     const safe = await outboundUrlPolicy.assertSafeUrl(normalised, {
-      purpose: "classroom API base URL"
+      purpose: "credential profile custom base URL"
     });
     return safe.href || normalised;
+  };
+
+  const buildProfileInput = async (body, existingProfile = null) => {
+    const provider = normaliseCredentialProvider(
+      body.provider || (existingProfile && existingProfile.provider) || "openai"
+    );
+    return {
+      name: body.name,
+      provider,
+      apiKey: body.apiKey,
+      customBaseUrl: await validateCustomEndpointUrl(
+        provider,
+        body.customBaseUrl != null
+          ? body.customBaseUrl
+          : (existingProfile && existingProfile.customBaseUrl)
+      ),
+      defaultModel: body.defaultModel,
+      makeDefault: parseBoolean(body.makeDefault, false)
+    };
   };
 
   const isSecureRequest = (requestUrl) => {
@@ -605,10 +819,29 @@ export function createTeacherPortal({
         });
         return htmlResponse(200, html, { corsHeaders });
       }
-      const classrooms = store.listClassroomsForTeacher(teacher.id).map(store.publicClassroomView);
+      const classrooms = store.listClassroomsForTeacher(teacher.id).map((classroom) => {
+        const view = store.publicClassroomView(classroom);
+        if (usageStore && typeof usageStore.publicView === "function") {
+          view.usage = usageStore.publicView(classroom.id);
+        }
+        return view;
+      });
+      const profileUsageCounts = {};
+      for (const classroom of classrooms) {
+        const profileId = String(classroom.resolvedCredentialProfileId || "").trim();
+        if (!profileId) continue;
+        profileUsageCounts[profileId] = (profileUsageCounts[profileId] || 0) + 1;
+      }
+      const credentialProfiles = store.listCredentialProfilesForTeacher(teacher.id).map((profile) => {
+        const view = store.publicCredentialProfileView(profile);
+        view.isDefault = teacher.defaultCredentialProfileId === profile.id;
+        view.usageCount = profileUsageCounts[profile.id] || 0;
+        return view;
+      });
       const html = renderDashboardPage({
         teacher,
         classrooms,
+        credentialProfiles,
         publicOrigin,
         notice,
         error
@@ -728,17 +961,77 @@ export function createTeacherPortal({
       });
     }
 
+    if (pathname === "/teacher/profiles" && request.method === "POST") {
+      const teacher = getTeacherFromRequest(request);
+      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      try {
+        const body = await readFormBody(request);
+        const profileInput = await buildProfileInput(body);
+        await store.createCredentialProfile(teacher.id, profileInput);
+        return redirectResponse("/teacher?notice=Credential%20profile%20created", { corsHeaders });
+      } catch (err) {
+        const message = encodeURIComponent((err && err.message) || "Could not create credential profile");
+        return redirectResponse(`/teacher?error=${message}`, { corsHeaders });
+      }
+    }
+
+    const profileMatch = pathname.match(/^\/teacher\/profiles\/([^/]+)(?:\/(delete|test))?$/);
+    if (profileMatch && request.method === "POST") {
+      const teacher = getTeacherFromRequest(request);
+      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      const profileId = decodeURIComponent(profileMatch[1]);
+      const action = profileMatch[2] || "update";
+      try {
+        if (action === "delete") {
+          await store.deleteCredentialProfile(teacher.id, profileId);
+          return redirectResponse("/teacher?notice=Credential%20profile%20deleted", { corsHeaders });
+        }
+        const existingProfile = store.getCredentialProfile(profileId);
+        if (!existingProfile || existingProfile.teacherId !== teacher.id) {
+          throw new Error("Credential profile not found");
+        }
+        const body = await readFormBody(request);
+        const profileInput = await buildProfileInput(body, existingProfile);
+        if (action === "test") {
+          const draftProfile = {
+            ...existingProfile,
+            ...profileInput,
+            apiKey: profileInput.apiKey != null && String(profileInput.apiKey).trim()
+              ? profileInput.apiKey
+              : existingProfile.apiKey
+          };
+          try {
+            await testCredentialProfileConnection(draftProfile);
+            await store.updateCredentialProfile(teacher.id, profileId, {
+              lastTestedAt: new Date().toISOString(),
+              lastTestOk: true
+            });
+            return redirectResponse("/teacher?notice=Credential%20profile%20test%20passed", { corsHeaders });
+          } catch (testError) {
+            await store.updateCredentialProfile(teacher.id, profileId, {
+              lastTestedAt: new Date().toISOString(),
+              lastTestOk: false
+            });
+            throw testError;
+          }
+        }
+        await store.updateCredentialProfile(teacher.id, profileId, profileInput);
+        return redirectResponse("/teacher?notice=Credential%20profile%20saved", { corsHeaders });
+      } catch (err) {
+        const message = encodeURIComponent((err && err.message) || "Credential profile update failed");
+        return redirectResponse(`/teacher?error=${message}`, { corsHeaders });
+      }
+    }
+
     if (pathname === "/teacher/classrooms" && request.method === "POST") {
       const teacher = getTeacherFromRequest(request);
       if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
       try {
         const body = await readFormBody(request);
-        const apiBaseUrl = await validateEndpointUrl(body.apiBaseUrl);
         await store.createClassroom(teacher.id, {
           name: body.name,
-          apiBaseUrl,
-          apiKey: body.apiKey,
-          model: body.model
+          credentialProfileId: body.credentialProfileId,
+          modelOverride: body.modelOverride
         });
         return redirectResponse("/teacher?notice=Classroom%20minted", { corsHeaders });
       } catch (err) {
@@ -763,14 +1056,10 @@ export function createTeacherPortal({
           return redirectResponse("/teacher?notice=Classroom%20deleted", { corsHeaders });
         }
         const body = await readFormBody(request);
-        const apiBaseUrl = body.apiBaseUrl != null
-          ? await validateEndpointUrl(body.apiBaseUrl)
-          : undefined;
         await store.updateClassroom(teacher.id, classroomId, {
           name: body.name,
-          apiBaseUrl,
-          apiKey: body.apiKey,
-          model: body.model,
+          credentialProfileId: body.credentialProfileId,
+          modelOverride: body.modelOverride,
           enabled: body.enabled != null
         });
         return redirectResponse("/teacher?notice=Classroom%20saved", { corsHeaders });

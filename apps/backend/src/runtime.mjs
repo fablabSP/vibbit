@@ -5,13 +5,11 @@ import {
   buildCorrectionInstruction,
   buildSystemPrompt,
   buildUserPrompt,
-  extractGeminiText,
   normaliseFeedback,
   parseModelOutput,
   stubForTarget,
   validateBlocksCompatibility
 } from "../../../shared/makecode-compat-core.mjs";
-import { callOpenAICompatible, providerConfigFromClassroom } from "./openai-compat.mjs";
 import { createTeacherPortal } from "./teacher-portal.mjs";
 import {
   createDeploymentPolicy,
@@ -19,12 +17,22 @@ import {
   resolveTrustedClientIp
 } from "./deployment-policy.mjs";
 import { createOutboundUrlPolicy } from "./outbound-url-policy.mjs";
+import {
+  callManagedProvider,
+  createProviderConfigFromCredentialProfile,
+  resolveManagedBaseUrlForProvider
+} from "./provider-registry.mjs";
 import { createRateLimitController } from "./rate-limit.mjs";
+import { createUsageStore } from "./usage-store.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
 const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
-const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_JSON_BYTES = 256 * 1024;
+const MAX_REQUEST_CHARS = 4000;
+const MAX_CURRENT_CODE_CHARS = 50000;
+const MAX_PAGE_ERROR_CHARS = 500;
+const MAX_UPSTREAM_ATTEMPTS = 3;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 5;
 const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
@@ -314,7 +322,8 @@ function buildEffectiveProviderConfig(baseProviderConfig, adminProviderStateInpu
     apiKeyFor: (provider) => {
       const safeProvider = normaliseProvider(provider);
       return adminProviderState.apiKeys[safeProvider] || baseProviderConfig.apiKeyFor(safeProvider);
-    }
+    },
+    baseUrlFor: (provider) => resolveManagedBaseUrlForProvider(provider)
   };
 }
 
@@ -534,7 +543,9 @@ async function readJson(request, maxBytes = MAX_JSON_BYTES) {
   const text = await request.text();
   const size = new TextEncoder().encode(text).length;
   if (size > maxBytes) {
-    throw new Error("Payload too large");
+    const error = new Error("Payload too large");
+    error.statusCode = 413;
+    throw error;
   }
   if (!text) return {};
   try {
@@ -581,85 +592,54 @@ function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
   });
 }
 
-async function callOpenAI(key, model, system, user, signal, baseUrl = "") {
-  return callOpenAICompatible({
-    apiKey: key,
-    baseUrl: baseUrl || "https://api.openai.com/v1",
-    model,
-    system,
-    user,
-    signal
-  });
-}
-
-async function callOpenRouter(key, model, system, user, signal) {
-  const body = {
-    model,
-    temperature: 0.1,
-    max_tokens: 3072,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }]
-  };
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + key
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenRouter error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
-}
-
-async function callGemini(key, model, system, user, signal) {
-  const url = "https://generativelanguage.googleapis.com/v1/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key);
-  const body = {
-    contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 3072
-    }
-  };
-
-  const response = await fetch(url, {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(`Gemini error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return extractGeminiText(data);
-}
-
-async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig, providerConfig) {
+async function generateManaged(
+  { target, request, currentCode, pageErrors, conversionDialog, provider, model },
+  runtimeConfig,
+  providerConfig,
+  { onUpstreamAttempt } = {}
+) {
   const effectiveProviderConfig = providerConfig || runtimeConfig.providerConfig;
   const selected = resolveProviderSelection(effectiveProviderConfig, provider, model);
-  const openAiBaseUrl = typeof effectiveProviderConfig.baseUrlFor === "function"
+  const providerBaseUrl = typeof effectiveProviderConfig.baseUrlFor === "function"
     ? effectiveProviderConfig.baseUrlFor(selected.provider)
     : "";
 
   const system = buildSystemPrompt(target);
   const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
-  const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
-    if (selected.provider === "openai") {
-      return callOpenAI(selected.key, selected.model, systemPrompt, user, signal, openAiBaseUrl);
+  let upstreamAttempts = 0;
+  const maxAttempts = Math.min(
+    MAX_UPSTREAM_ATTEMPTS,
+    1 + (runtimeConfig.emptyRetries || 0) + (runtimeConfig.validationRetries || 0)
+  );
+
+  const callProvider = async (systemPrompt) => {
+    if (upstreamAttempts >= maxAttempts) {
+      throw new Error("Upstream attempt limit reached");
     }
-    if (selected.provider === "gemini") return callGemini(selected.key, selected.model, systemPrompt, user, signal);
-    if (selected.provider === "openrouter") return callOpenRouter(selected.key, selected.model, systemPrompt, user, signal);
-    throw new Error(`Unsupported provider '${selected.provider}'`);
-  }, runtimeConfig.requestTimeoutMs);
+    upstreamAttempts += 1;
+    try {
+      const raw = await withTimeout(async (signal) => {
+        return callManagedProvider({
+          provider: selected.provider,
+          apiKey: selected.key,
+          model: selected.model,
+          system: systemPrompt,
+          user,
+          signal,
+          customBaseUrl: providerBaseUrl
+        });
+      }, runtimeConfig.requestTimeoutMs);
+      if (typeof onUpstreamAttempt === "function") {
+        await onUpstreamAttempt({ success: true, attempt: upstreamAttempts });
+      }
+      return raw;
+    } catch (error) {
+      if (typeof onUpstreamAttempt === "function") {
+        await onUpstreamAttempt({ success: false, attempt: upstreamAttempts, error });
+      }
+      throw error;
+    }
+  };
 
   const oneAttempt = async (extraSystem, insistOnlyCode) => {
     const prompt = system
@@ -674,11 +654,11 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
 
   let result = await oneAttempt("", false);
 
-  for (let i = 0; i < runtimeConfig.emptyRetries && (!result.code || !result.code.trim()); i++) {
+  for (let i = 0; i < runtimeConfig.emptyRetries && upstreamAttempts < maxAttempts && (!result.code || !result.code.trim()); i++) {
     result = await oneAttempt("Your last message had empty code. Return valid JSON only with feedback[] and code string.", true);
   }
 
-  for (let i = 0; i < runtimeConfig.validationRetries && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
+  for (let i = 0; i < runtimeConfig.validationRetries && upstreamAttempts < maxAttempts && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
     const violations = result.validation.violations || [];
     const extra = buildCorrectionInstruction(violations, target, { strict: i > 0 });
     result = await oneAttempt(extra, true);
@@ -690,7 +670,8 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
       feedback: normaliseFeedback(
         [...(result.feedback || []), "Model returned no code; provided fallback stub."],
         DEFAULT_FEEDBACK
-      )
+      ),
+      upstreamAttempts
     };
   }
 
@@ -701,13 +682,15 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
       feedback: normaliseFeedback(
         [...(result.feedback || []), "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")],
         DEFAULT_FEEDBACK
-      )
+      ),
+      upstreamAttempts
     };
   }
 
   return {
     code: result.code,
-    feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK)
+    feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK),
+    upstreamAttempts
   };
 }
 
@@ -725,7 +708,7 @@ function validatePayload(payload) {
   const model = payload && typeof payload.model === "string" ? payload.model.trim() : "";
   const rawPageErrors = payload && Array.isArray(payload.pageErrors) ? payload.pageErrors : [];
   const pageErrors = rawPageErrors
-    .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+    .map((item) => String(item || "").replace(/\s+/g, " ").trim().slice(0, MAX_PAGE_ERROR_CHARS))
     .filter(Boolean)
     .slice(0, 8);
   const rawConversionDialog = payload && payload.conversionDialog && typeof payload.conversionDialog === "object"
@@ -734,12 +717,18 @@ function validatePayload(payload) {
   const conversionDialog = rawConversionDialog
     ? {
       title: String(rawConversionDialog.title || "").replace(/\s+/g, " ").trim().slice(0, 220),
-      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 320)
+      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 1000)
     }
     : null;
 
   if (!request) {
     return { ok: false, error: "'request' is required" };
+  }
+  if (request.length > MAX_REQUEST_CHARS) {
+    return { ok: false, error: `'request' must be at most ${MAX_REQUEST_CHARS} characters` };
+  }
+  if (currentCode.length > MAX_CURRENT_CODE_CHARS) {
+    return { ok: false, error: `'currentCode' must be at most ${MAX_CURRENT_CODE_CHARS} characters` };
   }
 
   const safeTarget = ["microbit", "arcade", "maker"].includes(target) ? target : "microbit";
@@ -1501,13 +1490,19 @@ export function createBackendRuntime(options = {}) {
         ? options.loadDailyUsage
         : undefined
     });
+  const usageStore = options.usageStore || createUsageStore({
+    now: typeof options.now === "function" ? options.now : undefined,
+    persist: typeof options.persistUsageState === "function" ? options.persistUsageState : undefined,
+    initialState: options.usageState || {}
+  });
   const teacherPortal = createTeacherPortal({
     env,
     initialState: options.teacherPortalState || {},
     persistState: persistTeacherPortalState,
     respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig),
     deploymentPolicy: deployment,
-    outboundUrlPolicy
+    outboundUrlPolicy,
+    usageStore
   });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
   const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
@@ -1527,20 +1522,28 @@ export function createBackendRuntime(options = {}) {
     ) {
       throw Object.assign(new Error("Classroom session is no longer valid"), { statusCode: 401 });
     }
-    if (!classroom.apiKey) {
-      throw Object.assign(new Error("Classroom is missing an API key"), { statusCode: 503 });
+    const profile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(classroom);
+    if (!profile) {
+      throw Object.assign(new Error("Classroom is missing a credential profile"), { statusCode: 503 });
     }
-    try {
-      await outboundUrlPolicy.assertSafeUrl(classroom.apiBaseUrl, {
-        purpose: "classroom API base URL"
-      });
-    } catch (error) {
-      throw Object.assign(
-        new Error((error && error.message) || "Classroom endpoint is not allowed"),
-        { statusCode: 503 }
-      );
+    if (!profile.apiKey) {
+      throw Object.assign(new Error("Classroom credential profile is missing an API key"), { statusCode: 503 });
     }
-    return providerConfigFromClassroom(classroom);
+    if (profile.provider === "custom") {
+      try {
+        await outboundUrlPolicy.assertSafeUrl(profile.customBaseUrl, {
+          purpose: "credential profile custom base URL"
+        });
+      } catch (error) {
+        throw Object.assign(
+          new Error((error && error.message) || "Credential profile endpoint is not allowed"),
+          { statusCode: 503 }
+        );
+      }
+    }
+    return createProviderConfigFromCredentialProfile(profile, {
+      modelOverride: classroom.modelOverride
+    });
   };
 
   const respondRateLimited = (origin, decision) => new Response(JSON.stringify({
@@ -1559,6 +1562,7 @@ export function createBackendRuntime(options = {}) {
     const clientIp = resolveTrustedClientIp(request, deployment) || "local";
     const connectLimit = rateLimits.checkConnect({ clientIp });
     if (!connectLimit.ok) {
+      await usageStore.recordRateLimited("legacy");
       return respondRateLimited(origin, connectLimit);
     }
 
@@ -1579,15 +1583,23 @@ export function createBackendRuntime(options = {}) {
       const candidateCode = providedCode || classHeader;
       const teacherClassroom = teacherPortal.store.findClassroomByCode(candidateCode);
       if (teacherClassroom) {
-        if (!teacherClassroom.apiKey) {
+        const effectiveProfile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(teacherClassroom);
+        if (!effectiveProfile) {
           return respondJson(503, {
-            error: "Classroom is not ready yet. Ask your teacher to save an API key."
+            error: "Classroom is not ready yet. Ask your teacher to choose a credential profile."
+          }, origin, runtimeConfig);
+        }
+        if (!effectiveProfile.apiKey) {
+          return respondJson(503, {
+            error: "Classroom is not ready yet. Ask your teacher to save an API key in the credential profile."
           }, origin, runtimeConfig);
         }
         classroomId = teacherClassroom.id;
         publicProviderConfig = getPublicServerConfig(
           runtimeConfig,
-          providerConfigFromClassroom(teacherClassroom)
+          createProviderConfigFromCredentialProfile(effectiveProfile, {
+            modelOverride: teacherClassroom.modelOverride
+          })
         );
         sessionMeta = {
           student: String((body && body.student) || "").trim().slice(0, 120),
@@ -1603,6 +1615,8 @@ export function createBackendRuntime(options = {}) {
       student: String((body && body.student) || "").trim().slice(0, 120),
       classroomId
     });
+
+    await usageStore.recordConnect(classroomId || "legacy");
 
     return respondJson(200, {
       ok: true,
@@ -1821,13 +1835,27 @@ export function createBackendRuntime(options = {}) {
           classroomId
         });
         if (!reservation.ok) {
+          await usageStore.recordRateLimited(classroomId || "legacy");
           return respondRateLimited(origin, reservation);
         }
 
         try {
+          await usageStore.recordAcceptedGeneration(classroomId || "legacy");
           const providerConfig = await resolveProviderConfigForSession(session);
-          const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
-          return respondJson(200, result, origin, runtimeConfig);
+          const result = await generateManaged(
+            validated.value,
+            runtimeConfig,
+            providerConfig,
+            {
+              onUpstreamAttempt: async ({ success }) => {
+                await usageStore.recordUpstreamAttempt(classroomId || "legacy", { success });
+              }
+            }
+          );
+          return respondJson(200, {
+            code: result.code,
+            feedback: result.feedback
+          }, origin, runtimeConfig);
         } finally {
           if (typeof reservation.release === "function") reservation.release();
         }
@@ -1837,8 +1865,12 @@ export function createBackendRuntime(options = {}) {
             error: error.message || "Request failed"
           }, origin, runtimeConfig);
         }
+        if (error && error.statusCode === 413) {
+          return respondJson(413, { error: error.message || "Payload too large" }, origin, runtimeConfig);
+        }
         const { status, message } = classifyRequestError(error, runtimeConfig);
-        return respondJson(status, { error: message }, origin, runtimeConfig);
+        const statusCode = /too large/i.test(message) ? 413 : status;
+        return respondJson(statusCode, { error: message }, origin, runtimeConfig);
       }
     }
 

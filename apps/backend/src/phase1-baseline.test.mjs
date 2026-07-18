@@ -308,7 +308,7 @@ test("baseline: disabled classroom rejects connect and invalidates existing sess
   assert.match(String(generateBody.error || ""), /no longer valid/i);
 });
 
-test("baseline: persisted teacher portal state stores classroom apiKey in plaintext", async () => {
+test("baseline: persisted teacher portal state stores credential profile apiKey in plaintext", async () => {
   const persistedStates = [];
   const { runtime } = createBaselineRuntime({
     env: { VIBBIT_TEACHER_DEV_LOGIN: "true" },
@@ -323,19 +323,29 @@ test("baseline: persisted teacher portal state stores classroom apiKey in plaint
   });
   assert.equal(login.response.status, 303);
 
+  const createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
+    name: "School OpenAI",
+    provider: "openai",
+    apiKey: "sk-teacher-plaintext-key",
+    defaultModel: "gpt-4o-mini",
+    makeDefault: "1"
+  }, login.cookieHeader);
+  assert.equal(createProfile.response.status, 303);
+
+  const profile = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:teacher@school.edu")[0];
+  assert.ok(profile);
+
   const mint = await followTeacherForm(runtime, "/teacher/classrooms", {
     name: "Period 3",
-    apiBaseUrl: "https://api.openai.com/v1",
-    apiKey: "sk-teacher-plaintext-key",
-    model: "gpt-4o-mini"
+    credentialProfileId: profile.id
   }, login.cookieHeader);
   assert.equal(mint.response.status, 303);
   assert.ok(persistedStates.length > 0);
 
   const latest = persistedStates[persistedStates.length - 1];
-  const classrooms = Object.values(latest.classrooms || {});
-  assert.ok(classrooms.length > 0);
-  const saved = classrooms.find((item) => item.apiKey === "sk-teacher-plaintext-key");
+  const profiles = Object.values(latest.credentialProfiles || {});
+  assert.ok(profiles.length > 0);
+  const saved = profiles.find((item) => item.apiKey === "sk-teacher-plaintext-key");
   assert.ok(saved, "expected plaintext apiKey in persisted teacher portal state");
   assert.equal(saved.apiKey, "sk-teacher-plaintext-key");
 });

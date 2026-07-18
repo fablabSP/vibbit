@@ -13,6 +13,10 @@ export function classroomKeyAad(classroomId) {
   return `classroom:${String(classroomId || "").trim()}:apiKey`;
 }
 
+export function credentialProfileKeyAad(profileId) {
+  return `credentialProfile:${String(profileId || "").trim()}:apiKey`;
+}
+
 export function adminProviderKeyAad(provider) {
   return `adminProvider:${String(provider || "").trim()}:apiKey`;
 }
@@ -20,6 +24,14 @@ export function adminProviderKeyAad(provider) {
 export function createStateCodec(envInput = {}, secretBox = createSecretBox(envInput)) {
   function decryptTeacherPortalState(input) {
     const state = cloneJson(input && typeof input === "object" ? input : {});
+    const credentialProfiles = state.credentialProfiles && typeof state.credentialProfiles === "object"
+      ? state.credentialProfiles
+      : {};
+    for (const profile of Object.values(credentialProfiles)) {
+      if (!profile || typeof profile !== "object") continue;
+      const aad = credentialProfileKeyAad(profile.id);
+      profile.apiKey = secretBox.decrypt(profile.apiKey || "", aad);
+    }
     const classrooms = state.classrooms && typeof state.classrooms === "object" ? state.classrooms : {};
     for (const classroom of Object.values(classrooms)) {
       if (!classroom || typeof classroom !== "object") continue;
@@ -31,6 +43,15 @@ export function createStateCodec(envInput = {}, secretBox = createSecretBox(envI
 
   function encryptTeacherPortalState(input) {
     const state = cloneJson(input && typeof input === "object" ? input : {});
+    const credentialProfiles = state.credentialProfiles && typeof state.credentialProfiles === "object"
+      ? state.credentialProfiles
+      : {};
+    for (const profile of Object.values(credentialProfiles)) {
+      if (!profile || typeof profile !== "object") continue;
+      const aad = credentialProfileKeyAad(profile.id);
+      const plaintext = String(profile.apiKey || "");
+      profile.apiKey = plaintext ? secretBox.encrypt(plaintext, aad) : "";
+    }
     const classrooms = state.classrooms && typeof state.classrooms === "object" ? state.classrooms : {};
     for (const classroom of Object.values(classrooms)) {
       if (!classroom || typeof classroom !== "object") continue;
@@ -65,12 +86,21 @@ export function createStateCodec(envInput = {}, secretBox = createSecretBox(envI
   }
 
   function teacherPortalNeedsMigration(input) {
+    const credentialProfiles = input && input.credentialProfiles && typeof input.credentialProfiles === "object"
+      ? Object.values(input.credentialProfiles)
+      : [];
+    const profileNeedsMigration = credentialProfiles.some((profile) => {
+      const key = profile && profile.apiKey ? String(profile.apiKey) : "";
+      return Boolean(key) && !isEncryptedEnvelope(key);
+    });
+    if (profileNeedsMigration) return true;
+
     const classrooms = input && input.classrooms && typeof input.classrooms === "object"
       ? Object.values(input.classrooms)
       : [];
     return classrooms.some((classroom) => {
       const key = classroom && classroom.apiKey ? String(classroom.apiKey) : "";
-      return Boolean(key) && !isEncryptedEnvelope(key);
+      return Boolean(key);
     });
   }
 

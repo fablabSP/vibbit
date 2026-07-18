@@ -214,7 +214,7 @@ test("assertSafeRedirect rejects private redirect targets", async () => {
   );
 });
 
-test("integration: teacher mint rejects loopback endpoint and accepts OpenAI", async () => {
+test("integration: teacher profile create rejects loopback endpoint and accepts OpenAI", async () => {
   const runtime = createBackendRuntime({
     env: selfHostedEnv(),
     persistTeacherPortalState: async () => {},
@@ -228,11 +228,12 @@ test("integration: teacher mint rejects loopback endpoint and accepts OpenAI", a
   assert.equal(login.response.status, 303);
   assert.match(login.cookieHeader, /vibbit_teacher_session=/);
 
-  const blockedMint = await followTeacherForm(runtime, "/teacher/classrooms", {
-    name: "Blocked class",
-    apiBaseUrl: "http://127.0.0.1/v1",
+  const blockedMint = await followTeacherForm(runtime, "/teacher/profiles", {
+    name: "Blocked profile",
+    provider: "custom",
+    customBaseUrl: "http://127.0.0.1/v1",
     apiKey: "sk-test",
-    model: "gpt-4o-mini"
+    defaultModel: "gpt-4o-mini"
   }, login.cookieHeader);
   assert.equal(blockedMint.response.status, 303);
   assert.match(
@@ -240,16 +241,16 @@ test("integration: teacher mint rejects loopback endpoint and accepts OpenAI", a
     /error=.*(https|IP%20literal|not%20allowed)/i
   );
 
-  const allowedMint = await followTeacherForm(runtime, "/teacher/classrooms", {
-    name: "OpenAI class",
-    apiBaseUrl: "https://api.openai.com/v1",
+  const allowedMint = await followTeacherForm(runtime, "/teacher/profiles", {
+    name: "OpenAI profile",
+    provider: "openai",
     apiKey: "sk-test",
-    model: "gpt-4o-mini"
+    defaultModel: "gpt-4o-mini"
   }, login.cookieHeader);
   assert.equal(allowedMint.response.status, 303);
   assert.match(
     String(allowedMint.response.headers.get("location") || ""),
-    /notice=Classroom%20minted/
+    /notice=Credential%20profile%20created/
   );
 });
 

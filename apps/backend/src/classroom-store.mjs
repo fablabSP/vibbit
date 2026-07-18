@@ -1,3 +1,11 @@
+import {
+  defaultModelForCredentialProvider,
+  inferCredentialProfileFromLegacyEndpoint,
+  normaliseCredentialProvider,
+  normaliseOpenAiCompatibleBaseUrl,
+  providerDisplayName
+} from "./provider-registry.mjs";
+
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 5;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -61,36 +69,26 @@ export function createTeacherId(provider, subject) {
 }
 
 export function normaliseApiBaseUrl(value) {
-  let url = String(value || "").trim();
-  if (!url) return DEFAULT_OPENAI_BASE_URL;
-  if (!/^https?:\/\//i.test(url)) {
-    url = `https://${url}`;
-  }
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return DEFAULT_OPENAI_BASE_URL;
-    }
-    let path = parsed.pathname.replace(/\/+$/, "");
-    if (!path || path === "/") {
-      path = "/v1";
-    } else if (!/\/v\d+$/i.test(path) && !/\/chat\/completions$/i.test(path)) {
-      // Allow bare hosts and LiteLLM roots; default to /v1 OpenAI-compatible path.
-      path = `${path}/v1`.replace(/\/{2,}/g, "/");
-    }
-    parsed.pathname = path;
-    parsed.search = "";
-    parsed.hash = "";
-    return parsed.toString().replace(/\/+$/, "");
-  } catch {
-    return DEFAULT_OPENAI_BASE_URL;
-  }
+  return normaliseOpenAiCompatibleBaseUrl(value);
+}
+
+export function createCredentialProfileId() {
+  return "cp_" + bytesToBase64Url(randomBytes(12));
+}
+
+function migratedCredentialProfileIdForClassroom(classroomId) {
+  const safeId = String(classroomId || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 72);
+  return `cp_migrated_${safeId || "legacy"}`;
 }
 
 export function createEmptyTeacherPortalState() {
   return {
     teachers: {},
     classrooms: {},
+    credentialProfiles: {},
     retiredClassCodes: {}
   };
 }
@@ -124,8 +122,35 @@ function sanitiseTeacher(input) {
     name: String(source.name || "").trim().slice(0, 160),
     picture: String(source.picture || "").trim().slice(0, 1024),
     provider: String(source.provider || "local").trim().slice(0, 40) || "local",
+    defaultCredentialProfileId: String(source.defaultCredentialProfileId || "").trim().slice(0, 80),
     createdAt: String(source.createdAt || "").trim() || new Date().toISOString(),
     lastLoginAt: String(source.lastLoginAt || "").trim() || ""
+  };
+}
+
+function sanitiseCredentialProfile(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const id = String(source.id || "").trim().slice(0, 80);
+  const teacherId = String(source.teacherId || "").trim().slice(0, 220);
+  if (!id || !teacherId) return null;
+  const provider = normaliseCredentialProvider(source.provider);
+  const rawCustomBaseUrl = String(source.customBaseUrl || source.apiBaseUrl || "").trim();
+  return {
+    id,
+    teacherId,
+    name: String(source.name || "Credential profile").trim().slice(0, 120) || "Credential profile",
+    provider,
+    apiKey: String(source.apiKey || "").trim().slice(0, 4096),
+    customBaseUrl: provider === "custom" && rawCustomBaseUrl
+      ? normaliseApiBaseUrl(rawCustomBaseUrl)
+      : "",
+    defaultModel: String(source.defaultModel || defaultModelForCredentialProvider(provider))
+      .trim()
+      .slice(0, 160) || defaultModelForCredentialProvider(provider),
+    createdAt: String(source.createdAt || "").trim() || new Date().toISOString(),
+    updatedAt: String(source.updatedAt || "").trim() || new Date().toISOString(),
+    lastTestedAt: String(source.lastTestedAt || "").trim(),
+    lastTestOk: source.lastTestOk == null ? null : source.lastTestOk === true
   };
 }
 
@@ -141,9 +166,13 @@ function sanitiseClassroom(input) {
     teacherId,
     name: String(source.name || "Classroom").trim().slice(0, 120) || "Classroom",
     code,
-    apiBaseUrl: normaliseApiBaseUrl(source.apiBaseUrl || DEFAULT_OPENAI_BASE_URL),
+    credentialProfileId: String(source.credentialProfileId || "").trim().slice(0, 80),
+    modelOverride: String(source.modelOverride || "").trim().slice(0, 160),
+    apiBaseUrl: String(source.apiBaseUrl || "").trim()
+      ? normaliseApiBaseUrl(source.apiBaseUrl)
+      : "",
     apiKey,
-    model: String(source.model || DEFAULT_MODEL).trim().slice(0, 160) || DEFAULT_MODEL,
+    legacyModel: String(source.model || source.legacyModel || "").trim().slice(0, 160),
     enabled: source.enabled !== false,
     sessionVersion: parseSessionVersion(source.sessionVersion),
     createdAt: String(source.createdAt || "").trim() || new Date().toISOString(),
@@ -151,15 +180,128 @@ function sanitiseClassroom(input) {
   };
 }
 
+function sortByCreatedAt(a, b) {
+  return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+}
+
+function buildTeacherProfileIndex(credentialProfiles) {
+  const profileIdsByTeacher = {};
+  for (const profile of Object.values(credentialProfiles || {})) {
+    if (!profileIdsByTeacher[profile.teacherId]) profileIdsByTeacher[profile.teacherId] = [];
+    profileIdsByTeacher[profile.teacherId].push(profile.id);
+  }
+  for (const teacherId of Object.keys(profileIdsByTeacher)) {
+    profileIdsByTeacher[teacherId].sort((leftId, rightId) => {
+      const left = credentialProfiles[leftId];
+      const right = credentialProfiles[rightId];
+      return sortByCreatedAt(left || {}, right || {});
+    });
+  }
+  return profileIdsByTeacher;
+}
+
+function migrateTeacherPortalState({ teachers, classrooms, credentialProfiles, retiredClassCodes }) {
+  const nextTeachers = { ...teachers };
+  const nextClassrooms = {};
+  const nextProfiles = { ...credentialProfiles };
+
+  for (const classroom of Object.values(classrooms)) {
+    if (!classroom) continue;
+    const nextClassroom = { ...classroom };
+    const explicitProfile = nextClassroom.credentialProfileId
+      ? nextProfiles[nextClassroom.credentialProfileId]
+      : null;
+    const hasOwnedExplicitProfile = Boolean(
+      explicitProfile && explicitProfile.teacherId === nextClassroom.teacherId
+    );
+    const legacyApiKey = String(nextClassroom.apiKey || "").trim();
+
+    if (legacyApiKey) {
+      const inferred = inferCredentialProfileFromLegacyEndpoint(
+        nextClassroom.apiBaseUrl || DEFAULT_OPENAI_BASE_URL
+      );
+      const profileId = hasOwnedExplicitProfile
+        ? explicitProfile.id
+        : migratedCredentialProfileIdForClassroom(nextClassroom.id);
+      const existingProfile = nextProfiles[profileId];
+      const mergedProfile = sanitiseCredentialProfile({
+        ...(existingProfile || {}),
+        id: profileId,
+        teacherId: nextClassroom.teacherId,
+        name: (existingProfile && existingProfile.name) || nextClassroom.name,
+        provider: (existingProfile && existingProfile.provider) || inferred.provider,
+        apiKey: (existingProfile && existingProfile.apiKey) || legacyApiKey,
+        customBaseUrl: (existingProfile && existingProfile.customBaseUrl) || inferred.customBaseUrl,
+        defaultModel: (existingProfile && existingProfile.defaultModel)
+          || nextClassroom.modelOverride
+          || nextClassroom.legacyModel
+          || defaultModelForCredentialProvider(inferred.provider),
+        createdAt: (existingProfile && existingProfile.createdAt) || nextClassroom.createdAt,
+        updatedAt: (existingProfile && existingProfile.updatedAt) || nextClassroom.updatedAt
+      });
+      if (mergedProfile) {
+        nextProfiles[mergedProfile.id] = mergedProfile;
+        nextClassroom.credentialProfileId = mergedProfile.id;
+      }
+      nextClassroom.apiKey = "";
+      nextClassroom.legacyModel = "";
+    }
+
+    nextClassrooms[nextClassroom.id] = nextClassroom;
+  }
+
+  const profileIdsByTeacher = buildTeacherProfileIndex(nextProfiles);
+
+  for (const teacher of Object.values(nextTeachers)) {
+    if (!teacher) continue;
+    const defaultProfile = teacher.defaultCredentialProfileId
+      ? nextProfiles[teacher.defaultCredentialProfileId]
+      : null;
+    if (defaultProfile && defaultProfile.teacherId === teacher.id) continue;
+    const teacherProfiles = profileIdsByTeacher[teacher.id] || [];
+    teacher.defaultCredentialProfileId = teacherProfiles[0] || "";
+  }
+
+  for (const classroom of Object.values(nextClassrooms)) {
+    if (!classroom) continue;
+    const explicitProfile = classroom.credentialProfileId
+      ? nextProfiles[classroom.credentialProfileId]
+      : null;
+    if (classroom.credentialProfileId && (!explicitProfile || explicitProfile.teacherId !== classroom.teacherId)) {
+      classroom.credentialProfileId = "";
+    }
+  }
+
+  return {
+    teachers: nextTeachers,
+    classrooms: nextClassrooms,
+    credentialProfiles: nextProfiles,
+    retiredClassCodes
+  };
+}
+
 export function sanitiseTeacherPortalState(input) {
   const source = input && typeof input === "object" ? input : {};
   const teachers = {};
   const classrooms = {};
+  const credentialProfiles = {};
 
   const sourceTeachers = source.teachers && typeof source.teachers === "object" ? source.teachers : {};
   for (const value of Object.values(sourceTeachers)) {
     const teacher = sanitiseTeacher(value);
     if (teacher) teachers[teacher.id] = teacher;
+  }
+
+  const sourceProfiles = source.credentialProfiles && typeof source.credentialProfiles === "object"
+    ? source.credentialProfiles
+    : {};
+  for (const value of Object.values(sourceProfiles)) {
+    const profile = sanitiseCredentialProfile(value);
+    if (profile && teachers[profile.teacherId]) {
+      credentialProfiles[profile.id] = profile;
+    } else if (profile && !Object.keys(teachers).length) {
+      credentialProfiles[profile.id] = profile;
+    }
   }
 
   const sourceClassrooms = source.classrooms && typeof source.classrooms === "object" ? source.classrooms : {};
@@ -173,11 +315,12 @@ export function sanitiseTeacherPortalState(input) {
     }
   }
 
-  return {
+  return migrateTeacherPortalState({
     teachers,
     classrooms,
+    credentialProfiles,
     retiredClassCodes: sanitiseRetiredClassCodes(source.retiredClassCodes)
-  };
+  });
 }
 
 export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
@@ -191,10 +334,14 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
   };
 
   const upsertTeacher = async (teacherInput) => {
+    const existingTeacher = state.teachers[teacherInput && teacherInput.id];
     const teacher = sanitiseTeacher({
       ...teacherInput,
+      defaultCredentialProfileId: (
+        teacherInput && teacherInput.defaultCredentialProfileId
+      ) || (existingTeacher && existingTeacher.defaultCredentialProfileId) || "",
       lastLoginAt: new Date().toISOString(),
-      createdAt: (state.teachers[teacherInput && teacherInput.id] && state.teachers[teacherInput.id].createdAt)
+      createdAt: (existingTeacher && existingTeacher.createdAt)
         || teacherInput.createdAt
         || new Date().toISOString()
     });
@@ -212,11 +359,55 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
 
   const getTeacher = (teacherId) => state.teachers[String(teacherId || "").trim()] || null;
 
+  const getCredentialProfile = (profileId) => state.credentialProfiles[String(profileId || "").trim()] || null;
+
+  const listCredentialProfilesForTeacher = (teacherId) => {
+    const id = String(teacherId || "").trim();
+    return Object.values(state.credentialProfiles)
+      .filter((profile) => profile.teacherId === id)
+      .sort(sortByCreatedAt);
+  };
+
   const listClassroomsForTeacher = (teacherId) => {
     const id = String(teacherId || "").trim();
     return Object.values(state.classrooms)
       .filter((classroom) => classroom.teacherId === id)
       .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  };
+
+  const getEffectiveCredentialProfileForTeacher = (teacherId, explicitProfileId = "") => {
+    const teacher = getTeacher(teacherId);
+    if (!teacher) return null;
+    const requestedId = String(explicitProfileId || "").trim();
+    if (requestedId) {
+      const profile = getCredentialProfile(requestedId);
+      return profile && profile.teacherId === teacher.id ? profile : null;
+    }
+    const defaultProfile = teacher.defaultCredentialProfileId
+      ? getCredentialProfile(teacher.defaultCredentialProfileId)
+      : null;
+    return defaultProfile && defaultProfile.teacherId === teacher.id ? defaultProfile : null;
+  };
+
+  const getEffectiveCredentialProfileForClassroom = (classroomInput) => {
+    const classroom = typeof classroomInput === "string"
+      ? getClassroom(classroomInput)
+      : classroomInput;
+    if (!classroom) return null;
+    return getEffectiveCredentialProfileForTeacher(classroom.teacherId, classroom.credentialProfileId);
+  };
+
+  const getEffectiveModelForClassroom = (classroomInput) => {
+    const classroom = typeof classroomInput === "string"
+      ? getClassroom(classroomInput)
+      : classroomInput;
+    if (!classroom) return "";
+    const profile = getEffectiveCredentialProfileForClassroom(classroom);
+    return String(
+      classroom.modelOverride
+      || (profile && profile.defaultModel)
+      || (profile ? defaultModelForCredentialProvider(profile.provider) : DEFAULT_MODEL)
+    ).trim();
   };
 
   const findClassroomByCode = (code) => {
@@ -228,6 +419,31 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
   };
 
   const getClassroom = (classroomId) => state.classrooms[String(classroomId || "").trim()] || null;
+
+  const ensureTeacherOwnsProfile = (teacherId, profileId) => {
+    const requestedId = String(profileId || "").trim();
+    if (!requestedId) return null;
+    const profile = getCredentialProfile(requestedId);
+    if (!profile || profile.teacherId !== String(teacherId || "").trim()) {
+      throw new Error("Credential profile not found");
+    }
+    return profile;
+  };
+
+  const ensureEffectiveProfileSelection = (teacherId, requestedProfileId = "") => {
+    if (String(requestedProfileId || "").trim()) {
+      ensureTeacherOwnsProfile(teacherId, requestedProfileId);
+      return;
+    }
+    const teacher = getTeacher(teacherId);
+    if (!teacher || !teacher.defaultCredentialProfileId) {
+      throw new Error("Choose a credential profile or set a teacher default first");
+    }
+    const defaultProfile = getCredentialProfile(teacher.defaultCredentialProfileId);
+    if (!defaultProfile || defaultProfile.teacherId !== teacher.id) {
+      throw new Error("Teacher default credential profile is missing");
+    }
+  };
 
   const isCodeRetired = (code) => {
     const normalised = normaliseClassCode(code);
@@ -260,9 +476,113 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     };
   };
 
+  const createCredentialProfile = async (teacherId, input = {}) => {
+    const teacher = getTeacher(teacherId);
+    if (!teacher) throw new Error("Teacher not found");
+    const provider = normaliseCredentialProvider(input.provider);
+    const profile = sanitiseCredentialProfile({
+      id: createCredentialProfileId(),
+      teacherId: teacher.id,
+      name: input.name || "Credential profile",
+      provider,
+      apiKey: input.apiKey || "",
+      customBaseUrl: provider === "custom" ? input.customBaseUrl || "" : "",
+      defaultModel: input.defaultModel || defaultModelForCredentialProvider(provider),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    if (!profile) throw new Error("Invalid credential profile");
+    if (profile.provider === "custom" && !profile.customBaseUrl) {
+      throw new Error("Custom provider requires a custom base URL");
+    }
+    const shouldBecomeDefault = input.makeDefault === true || input.makeDefault === "1"
+      || !teacher.defaultCredentialProfileId;
+    const nextTeacher = shouldBecomeDefault
+      ? { ...teacher, defaultCredentialProfileId: profile.id }
+      : teacher;
+    state = {
+      ...state,
+      credentialProfiles: {
+        ...state.credentialProfiles,
+        [profile.id]: profile
+      },
+      teachers: {
+        ...state.teachers,
+        [teacher.id]: nextTeacher
+      }
+    };
+    await save();
+    return profile;
+  };
+
+  const updateCredentialProfile = async (teacherId, profileId, input = {}) => {
+    const teacher = getTeacher(teacherId);
+    const existing = ensureTeacherOwnsProfile(teacherId, profileId);
+    if (!teacher || !existing) throw new Error("Credential profile not found");
+    const provider = normaliseCredentialProvider(input.provider || existing.provider);
+    const profile = sanitiseCredentialProfile({
+      ...existing,
+      name: input.name != null ? input.name : existing.name,
+      provider,
+      apiKey: input.apiKey != null && String(input.apiKey).trim()
+        ? input.apiKey
+        : existing.apiKey,
+      customBaseUrl: provider === "custom"
+        ? (input.customBaseUrl != null ? input.customBaseUrl : existing.customBaseUrl)
+        : "",
+      defaultModel: input.defaultModel != null ? input.defaultModel : existing.defaultModel,
+      updatedAt: new Date().toISOString(),
+      lastTestedAt: input.lastTestedAt != null ? input.lastTestedAt : existing.lastTestedAt,
+      lastTestOk: input.lastTestOk != null ? input.lastTestOk : existing.lastTestOk
+    });
+    if (profile.provider === "custom" && !profile.customBaseUrl) {
+      throw new Error("Custom provider requires a custom base URL");
+    }
+    const nextTeacher = input.makeDefault === true || input.makeDefault === "1"
+      ? { ...teacher, defaultCredentialProfileId: profile.id }
+      : teacher;
+    state = {
+      ...state,
+      credentialProfiles: {
+        ...state.credentialProfiles,
+        [profile.id]: profile
+      },
+      teachers: {
+        ...state.teachers,
+        [teacher.id]: nextTeacher
+      }
+    };
+    await save();
+    return profile;
+  };
+
+  const deleteCredentialProfile = async (teacherId, profileId) => {
+    const teacher = getTeacher(teacherId);
+    const existing = ensureTeacherOwnsProfile(teacherId, profileId);
+    if (!teacher || !existing) throw new Error("Credential profile not found");
+    if (teacher.defaultCredentialProfileId === existing.id) {
+      throw new Error("Reassign the teacher default before deleting this credential profile");
+    }
+    const referencingClassroom = listClassroomsForTeacher(teacher.id)
+      .find((classroom) => classroom.credentialProfileId === existing.id);
+    if (referencingClassroom) {
+      throw new Error("Reassign classrooms before deleting this credential profile");
+    }
+    const nextProfiles = { ...state.credentialProfiles };
+    delete nextProfiles[existing.id];
+    state = {
+      ...state,
+      credentialProfiles: nextProfiles
+    };
+    await save();
+    return true;
+  };
+
   const createClassroom = async (teacherId, input = {}) => {
     const teacher = getTeacher(teacherId);
     if (!teacher) throw new Error("Teacher not found");
+    const requestedProfileId = String(input.credentialProfileId || "").trim();
+    ensureEffectiveProfileSelection(teacher.id, requestedProfileId);
 
     const id = createClassroomId();
     const code = normaliseClassCode(input.code) || mintUniqueCode();
@@ -273,9 +593,8 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       teacherId: teacher.id,
       name: input.name || "Classroom",
       code,
-      apiBaseUrl: input.apiBaseUrl || DEFAULT_OPENAI_BASE_URL,
-      apiKey: input.apiKey || "",
-      model: input.model || DEFAULT_MODEL,
+      credentialProfileId: requestedProfileId,
+      modelOverride: input.modelOverride || "",
       enabled: input.enabled !== false,
       sessionVersion: 1,
       createdAt: new Date().toISOString(),
@@ -303,6 +622,10 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     const nextCode = input.code != null ? normaliseClassCode(input.code) : existing.code;
     if (!nextCode) throw new Error("Classroom code is required");
     if (isCodeTaken(nextCode, existing.id)) throw new Error("Classroom code already in use");
+    const nextCredentialProfileId = input.credentialProfileId != null
+      ? String(input.credentialProfileId || "").trim()
+      : existing.credentialProfileId;
+    ensureEffectiveProfileSelection(teacherId, nextCredentialProfileId);
 
     const nextEnabled = input.enabled != null
       ? (input.enabled !== false && input.enabled !== "false")
@@ -327,11 +650,8 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       ...existing,
       name: input.name != null ? input.name : existing.name,
       code: nextCode,
-      apiBaseUrl: input.apiBaseUrl != null ? input.apiBaseUrl : existing.apiBaseUrl,
-      apiKey: input.apiKey != null && String(input.apiKey).trim()
-        ? input.apiKey
-        : existing.apiKey,
-      model: input.model != null ? input.model : existing.model,
+      credentialProfileId: nextCredentialProfileId,
+      modelOverride: input.modelOverride != null ? input.modelOverride : existing.modelOverride,
       enabled: nextEnabled,
       sessionVersion: nextVersion,
       updatedAt: new Date().toISOString()
@@ -377,16 +697,51 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
 
   const publicClassroomView = (classroom) => {
     if (!classroom) return null;
+    const teacher = getTeacher(classroom.teacherId);
+    const profile = getEffectiveCredentialProfileForClassroom(classroom);
+    const usingTeacherDefault = Boolean(
+      !classroom.credentialProfileId
+      && teacher
+      && teacher.defaultCredentialProfileId
+      && profile
+      && profile.id === teacher.defaultCredentialProfileId
+    );
     return {
       id: classroom.id,
       name: classroom.name,
       code: classroom.code,
+      credentialProfileId: classroom.credentialProfileId,
+      modelOverride: classroom.modelOverride,
+      usingTeacherDefault,
+      resolvedCredentialProfileId: profile ? profile.id : "",
+      resolvedCredentialProfileName: profile ? profile.name : "",
+      resolvedProvider: profile ? profile.provider : "",
+      resolvedProviderLabel: profile ? providerDisplayName(profile.provider) : "",
+      resolvedCustomBaseUrl: profile && profile.provider === "custom" ? profile.customBaseUrl : "",
+      resolvedModel: getEffectiveModelForClassroom(classroom),
       apiBaseUrl: classroom.apiBaseUrl,
-      model: classroom.model,
       enabled: classroom.enabled,
-      hasApiKey: Boolean(classroom.apiKey),
+      hasApiKey: Boolean(profile && profile.apiKey),
       createdAt: classroom.createdAt,
       updatedAt: classroom.updatedAt
+    };
+  };
+
+  const publicCredentialProfileView = (profile) => {
+    if (!profile) return null;
+    return {
+      id: profile.id,
+      teacherId: profile.teacherId,
+      name: profile.name,
+      provider: profile.provider,
+      providerLabel: providerDisplayName(profile.provider),
+      customBaseUrl: profile.customBaseUrl,
+      defaultModel: profile.defaultModel,
+      hasApiKey: Boolean(profile.apiKey),
+      createdAt: profile.createdAt,
+      updatedAt: profile.updatedAt,
+      lastTestedAt: profile.lastTestedAt,
+      lastTestOk: profile.lastTestOk
     };
   };
 
@@ -394,14 +749,23 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     getState: () => state,
     upsertTeacher,
     getTeacher,
+    getCredentialProfile,
+    listCredentialProfilesForTeacher,
+    getEffectiveCredentialProfileForTeacher,
+    getEffectiveCredentialProfileForClassroom,
+    getEffectiveModelForClassroom,
     listClassroomsForTeacher,
     findClassroomByCode,
     getClassroom,
+    createCredentialProfile,
+    updateCredentialProfile,
+    deleteCredentialProfile,
     createClassroom,
     updateClassroom,
     rotateClassroomCode,
     deleteClassroom,
     publicClassroomView,
+    publicCredentialProfileView,
     countClassrooms: () => Object.keys(state.classrooms).length
   };
 }
