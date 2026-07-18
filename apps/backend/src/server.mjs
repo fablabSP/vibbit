@@ -247,7 +247,7 @@ server.listen(PORT, () => {
   const lines = runtime.getStartupInfo({ listenUrl });
   for (const line of lines) console.log(line);
   if (runtime.config.deployment && runtime.config.deployment.adminPanelEnabled) {
-    console.log(`[Vibbit backend] Admin panel -> ${listenUrl}/admin?admin=<redacted>`);
+    console.log(`[Vibbit backend] Admin panel -> ${listenUrl}/admin (supply VIBBIT_ADMIN_TOKEN via the environment; token is not printed)`);
   }
   console.log(`[Vibbit backend] State file=${STATE_FILE}`);
   console.log(

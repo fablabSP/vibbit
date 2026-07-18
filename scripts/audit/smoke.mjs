@@ -125,6 +125,7 @@ async function runSmokeUi() {
     pushCheck(
       "05 Hosted-managed setup defaults",
       setupDefault.modeValue === "managed"
+        && setupDefault.modeRowHidden
         && setupDefault.byokProviderHidden
         && setupDefault.byokModelHidden
         && setupDefault.byokKeyHidden
@@ -199,12 +200,20 @@ async function runSmokeUi() {
         const nativeFetch = window.fetch.bind(window);
         window.__smokeManagedCalls = 0;
         window.__smokeByokCalls = 0;
+        window.__smokeConnectCalls = 0;
+        window.__smokeSessionToken = "";
         window.fetch = (input, init) => {
           const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+          const headers = (init && init.headers) || {};
+          const authHeader = typeof headers.get === "function"
+            ? (headers.get("authorization") || headers.get("Authorization") || "")
+            : (headers.Authorization || headers.authorization || "");
           if (url.includes("/vibbit/connect")) {
+            window.__smokeConnectCalls += 1;
+            window.__smokeSessionToken = "smoke-session-token";
             return Promise.resolve(new Response(JSON.stringify({
               ok: true,
-              sessionToken: "smoke-session-token",
+              sessionToken: window.__smokeSessionToken,
               expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
             }), {
               status: 200,
@@ -212,6 +221,12 @@ async function runSmokeUi() {
             }));
           }
           if (url.includes("/vibbit/generate")) {
+            if (!window.__smokeSessionToken || !String(authHeader).includes(window.__smokeSessionToken)) {
+              return Promise.resolve(new Response(JSON.stringify({ error: "Unauthorized" }), {
+                status: 401,
+                headers: { "Content-Type": "application/json" }
+              }));
+            }
             window.__smokeManagedCalls += 1;
             return Promise.resolve(new Response(JSON.stringify({
               code: "basic.showString(\"Managed\")",
@@ -276,18 +291,28 @@ async function runSmokeUi() {
       const feedbackLines = Array.from(document.querySelectorAll("#fbLines > div"))
         .map((node) => (node.textContent || "").trim())
         .filter(Boolean);
-      return { status, logText, pastedCode, feedbackVisible, feedbackLines };
+      return {
+        status,
+        logText,
+        pastedCode,
+        feedbackVisible,
+        feedbackLines,
+        connectCalls: Number(window.__smokeConnectCalls || 0),
+        managedCalls: Number(window.__smokeManagedCalls || 0)
+      };
     });
     await page.screenshot({ path: screenshots.managedFeedback, fullPage: false });
 
     pushCheck(
       "09 Managed mocked generation + feedback fallback",
       managedGenerationState.status === "Done"
+        && managedGenerationState.connectCalls === 1
+        && managedGenerationState.managedCalls === 1
         && managedGenerationState.logText.includes("Pasted and switched back to Blocks.")
         && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")
         && managedGenerationState.feedbackVisible
         && managedGenerationState.feedbackLines.includes("Model completed generation without explicit feedback notes."),
-      `status='${managedGenerationState.status}', pastedCodeIncludesExpected=${managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")}, feedbackVisible=${managedGenerationState.feedbackVisible}, feedbackLines=${managedGenerationState.feedbackLines.join(" || ")}.`
+      `status='${managedGenerationState.status}', connectCalls=${managedGenerationState.connectCalls}, managedCalls=${managedGenerationState.managedCalls}, pastedCodeIncludesExpected=${managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")}, feedbackVisible=${managedGenerationState.feedbackVisible}, feedbackLines=${managedGenerationState.feedbackLines.join(" || ")}.`
     );
 
     // Hosted-managed builds disable BYOK; keep a second managed generate as the

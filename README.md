@@ -172,7 +172,7 @@ Default local URL:
 
 - `http://localhost:8787`
 
-On start, backend logs the classroom share line (classroom code; hosted students need only the code) and the admin URL (`/admin?admin=...`).
+On start, backend logs the classroom share line and admin path. Supply `VIBBIT_ADMIN_TOKEN` through the environment; the token is not printed.
 
 If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and configure them in the Provider Setup form.
 

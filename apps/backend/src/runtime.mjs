@@ -1636,7 +1636,7 @@ export function createBackendRuntime(options = {}) {
     const providedCode = body && (body.classCode || body.code);
     let classroomId = "";
     let sessionMeta = null;
-    let publicProviderConfig = getEffectiveProviderConfig();
+    let publicProviderConfig = getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig());
 
     if (authMode === "app-token") {
       const token = extractBearerToken(request.headers.get("authorization"));
