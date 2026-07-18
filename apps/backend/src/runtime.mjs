@@ -384,7 +384,12 @@ function createSessionStore(ttlMs) {
       sessions.delete(token);
       return null;
     }
-    return entry;
+    return {
+      token,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+      meta: entry.meta
+    };
   };
 
   const isValidSession = (token) => Boolean(getSession(token));
@@ -1321,7 +1326,9 @@ function getRequestSession(request, sessionStore) {
   const authHeader = request.headers.get("authorization");
   const bearer = extractBearerToken(authHeader);
   const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
-  return sessionStore.getSession(sessionHeader) || sessionStore.getSession(bearer) || null;
+  // Prefer Authorization bearer (client contract) so a forged x-vibbit-session
+  // cannot switch the rate-limit bucket away from the authenticated session.
+  return sessionStore.getSession(bearer) || sessionStore.getSession(sessionHeader) || null;
 }
 
 function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {

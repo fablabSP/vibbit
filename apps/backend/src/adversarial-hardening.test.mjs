@@ -177,6 +177,85 @@ test("generate rate limit keys off canonical session.token", async () => {
   assert.equal(second.reason, "generate_session");
 });
 
+test("HTTP generate rate limits are isolated per session token", async () => {
+  const runtime = createBackendRuntime({
+    env: {
+      VIBBIT_CLASSROOM_ENABLED: "true",
+      VIBBIT_CLASSROOM_CODE: "ABCDE",
+      VIBBIT_CLASSROOM_CODE_AUTO: "false",
+      VIBBIT_TEACHER_DEV_LOGIN: "true",
+      VIBBIT_OPENAI_API_KEY: "server-key",
+      VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "1",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "1000"
+    },
+    teacherPortalState: {},
+    persistTeacherPortalState: async () => {},
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
+  });
+
+  async function connect() {
+    const response = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ classCode: "ABCDE" })
+    }));
+    assert.equal(response.status, 200);
+    return response.json();
+  }
+
+  const firstSession = await connect();
+  const secondSession = await connect();
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{
+      message: {
+        content: JSON.stringify({
+          feedback: ["ok"],
+          code: "basic.showIcon(IconNames.Heart)"
+        })
+      }
+    }]
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  try {
+    const firstGenerate = await runtime.fetch(new Request("https://example.test/vibbit/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${firstSession.sessionToken}`
+      },
+      body: JSON.stringify({ target: "microbit", request: "Show a heart" })
+    }));
+    assert.equal(firstGenerate.status, 200);
+
+    const secondGenerate = await runtime.fetch(new Request("https://example.test/vibbit/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secondSession.sessionToken}`,
+        // Forged header must not steal/collide with the first session bucket.
+        "X-Vibbit-Session": firstSession.sessionToken
+      },
+      body: JSON.stringify({ target: "microbit", request: "Show a heart" })
+    }));
+    assert.equal(secondGenerate.status, 200);
+
+    const firstAgain = await runtime.fetch(new Request("https://example.test/vibbit/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${firstSession.sessionToken}`
+      },
+      body: JSON.stringify({ target: "microbit", request: "Show a heart" })
+    }));
+    assert.equal(firstAgain.status, 429);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchWithPinnedAddresses refuses empty pin sets", async () => {
   await assert.rejects(
     () => fetchWithPinnedAddresses("https://example.test/v1", { method: "GET" }, []),
