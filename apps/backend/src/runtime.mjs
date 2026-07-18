@@ -13,6 +13,10 @@ import {
 } from "../../../shared/makecode-compat-core.mjs";
 import { callOpenAICompatible, providerConfigFromClassroom } from "./openai-compat.mjs";
 import { createTeacherPortal } from "./teacher-portal.mjs";
+import {
+  createDeploymentPolicy,
+  resolveRequestPublicOrigin
+} from "./deployment-policy.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
@@ -79,7 +83,10 @@ function firstHeaderToken(value) {
     .trim();
 }
 
-function resolvePublicOrigin(request, requestUrl) {
+function resolvePublicOrigin(request, requestUrl, deploymentPolicy) {
+  if (deploymentPolicy) {
+    return resolveRequestPublicOrigin(request, requestUrl, deploymentPolicy);
+  }
   const forwardedProto = firstHeaderToken(request.headers.get("x-forwarded-proto")).toLowerCase();
   const forwardedHost = firstHeaderToken(request.headers.get("x-forwarded-host"));
   const protocol = (forwardedProto === "http" || forwardedProto === "https")
@@ -375,7 +382,8 @@ function createSessionStore(ttlMs) {
 
 function createRuntimeConfig(envInput = {}) {
   const env = envInput || {};
-  const allowOrigin = env.VIBBIT_ALLOW_ORIGIN || "*";
+  const deployment = createDeploymentPolicy(env);
+  const allowOrigin = deployment.allowOrigin;
   const requestTimeoutMs = parseInteger(env.VIBBIT_REQUEST_TIMEOUT_MS, 60000, { min: 5000, max: 180000 });
   const emptyRetries = parseInteger(env.VIBBIT_EMPTY_RETRIES, 2, { min: 0, max: 5 });
   const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
@@ -409,10 +417,11 @@ function createRuntimeConfig(envInput = {}) {
     || env.VIBBIT_OPENROUTER_API_KEY
     || ""
   );
-  const classroomCode = classroomEnabled
+  const legacyCodesEnabled = deployment.legacyClassroomCodesEnabled;
+  const classroomCode = classroomEnabled && legacyCodesEnabled
     ? (configuredCode || (autoGenerateCode ? generateClassCodeFromSeed(classCodeSeed, classCodeLength) : ""))
     : "";
-  // Legacy single-code mode may be empty when teachers mint codes via /teacher.
+  // Hosted mode uses teacher-minted codes only; legacy single-code mode is self-hosted.
 
   const sessionTtlMs = parseInteger(env.VIBBIT_SESSION_TTL_MS, 8 * 60 * 60 * 1000, {
     min: 5 * 60 * 1000,
@@ -436,7 +445,8 @@ function createRuntimeConfig(envInput = {}) {
     authMode,
     classroomCode,
     classCodeLength,
-    sessionTtlMs
+    sessionTtlMs,
+    deployment
   };
 }
 
@@ -1317,17 +1327,24 @@ function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
 
 function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } = {}) {
   const providerConfig = effectiveProviderConfig || runtimeConfig.providerConfig;
+  const deployment = runtimeConfig.deployment || {};
   const info = [
+    `[Vibbit backend] Deployment mode=${deployment.mode || "self-hosted"}`,
     `[Vibbit backend] Provider=${providerConfig.defaultProvider} model=${providerConfig.defaultModelFor(providerConfig.defaultProvider)}`,
     `[Vibbit backend] Enabled providers=${providerConfig.enabledProviders.join(", ")}`,
     `[Vibbit backend] Auth mode=${getAuthMode(runtimeConfig)}`
   ];
   if (listenUrl) info.unshift(`[Vibbit backend] Listening on ${listenUrl}`);
+  if (deployment.publicOrigin) {
+    info.push(`[Vibbit backend] Public origin=${deployment.publicOrigin}`);
+  }
   if (getAuthMode(runtimeConfig) === "classroom") {
     if (runtimeConfig.classroomCode) {
       info.push(`[Vibbit backend] Legacy class code -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+    } else if (deployment.isHosted) {
+      info.push("[Vibbit backend] Hosted mode: legacy class codes disabled; teachers mint codes at /teacher");
     }
-    info.push(`[Vibbit backend] Teachers mint classroom codes at ${(listenUrl || "<your-server-url>")}/teacher`);
+    info.push(`[Vibbit backend] Teachers mint classroom codes at ${(deployment.publicOrigin || listenUrl || "<your-server-url>")}/teacher`);
   }
   if (runtimeConfig.bookmarkletEnabled) {
     info.push(`[Vibbit backend] Bookmarklet install page -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_INSTALL_ROUTE}`);
@@ -1433,7 +1450,7 @@ function resolveExtensionDownloadTarget(request, requestUrl, runtimeConfig) {
   if (!configured) return "";
   if (/^https?:\/\//i.test(configured)) return configured;
   try {
-    const publicOrigin = resolvePublicOrigin(request, requestUrl);
+    const publicOrigin = resolvePublicOrigin(request, requestUrl, runtimeConfig.deployment);
     return new URL(configured, `${publicOrigin}/`).toString();
   } catch {
     return "";
@@ -1461,13 +1478,16 @@ export function createBackendRuntime(options = {}) {
     options.adminProviderState || createEmptyAdminProviderState(),
     runtimeConfig.providerConfig.enabledProviders
   );
+  const deployment = runtimeConfig.deployment;
   const teacherPortal = createTeacherPortal({
     env,
     initialState: options.teacherPortalState || {},
     persistState: persistTeacherPortalState,
-    respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig)
+    respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig),
+    deploymentPolicy: deployment
   });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
+  const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
 
   const resolveProviderConfigForSession = (session) => {
     const classroomId = session && session.meta && session.meta.classroomId
@@ -1542,7 +1562,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (rawPathname === "/" && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
       const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
         ? { enableManaged: true, enableByok: true }
@@ -1592,7 +1612,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_RUNTIME_ROUTE && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeSource = buildBookmarkletRuntimeSource(bookmarkletRuntimeTemplate, publicOrigin);
       return respondJavaScript(200, runtimeSource, origin, runtimeConfig, {
         "Cache-Control": "no-store"
@@ -1600,7 +1620,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_INSTALL_ROUTE && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
       const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
         ? { enableManaged: true, enableByok: true }
@@ -1645,10 +1665,18 @@ export function createBackendRuntime(options = {}) {
       const teacherResponse = await teacherPortal.handle(request, {
         pathname,
         origin,
-        publicOrigin: resolvePublicOrigin(request, requestUrl),
+        publicOrigin: publicOriginFor(request, requestUrl),
         requestUrl
       });
       if (teacherResponse) return teacherResponse;
+    }
+
+    if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+      if (!deployment.adminPanelEnabled) {
+        return respondJson(404, {
+          error: "Admin panel is unavailable in hosted mode. Use /teacher."
+        }, origin, runtimeConfig);
+      }
     }
 
     if (pathname === "/admin" && request.method === "GET") {

@@ -123,17 +123,17 @@ function createTeacherSessionStore(ttlMs = TEACHER_SESSION_TTL_MS) {
   };
 }
 
-function resolveGoogleConfig(env = {}) {
+function resolveGoogleConfig(env = {}, deploymentPolicy = null) {
   const clientId = String(env.VIBBIT_GOOGLE_CLIENT_ID || env.GOOGLE_CLIENT_ID || "").trim();
   const clientSecret = String(env.VIBBIT_GOOGLE_CLIENT_SECRET || env.GOOGLE_CLIENT_SECRET || "").trim();
   const configuredRedirect = String(
     env.VIBBIT_GOOGLE_REDIRECT_URI || env.GOOGLE_REDIRECT_URI || ""
   ).trim();
   const enabled = Boolean(clientId && clientSecret);
-  const allowDevLogin = parseBoolean(
-    env.VIBBIT_TEACHER_DEV_LOGIN,
-    !enabled
-  );
+  // Dev login defaults off. Hosted policy forbids it; self-hosted needs explicit opt-in.
+  const allowDevLogin = deploymentPolicy
+    ? Boolean(deploymentPolicy.allowDevLogin)
+    : parseBoolean(env.VIBBIT_TEACHER_DEV_LOGIN, false);
   return {
     clientId,
     clientSecret,
@@ -345,13 +345,13 @@ function teacherShell({ title, body, notice = "", error = "" }) {
 function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = "", error = "" }) {
   const googleBlock = googleEnabled
     ? `<p><a class="btn" href="/teacher/auth/google">Continue with Google</a></p>`
-    : `<p class="hint">Google sign-in is not configured on this server. Set <code>VIBBIT_GOOGLE_CLIENT_ID</code> and <code>VIBBIT_GOOGLE_CLIENT_SECRET</code> to enable it.</p>`;
+    : `<p class="hint">Google sign-in is not configured on this server. Set <code>VIBBIT_GOOGLE_CLIENT_ID</code> and <code>VIBBIT_GOOGLE_CLIENT_SECRET</code> to enable it (required for hosted mode).</p>`;
 
   const devBlock = allowDevLogin
     ? `
       <div class="panel">
         <h2>Local teacher login</h2>
-        <p class="hint">For self-hosted or development use when Google OAuth is unavailable.</p>
+        <p class="hint">Self-hosted opt-in only. Set <code>VIBBIT_TEACHER_DEV_LOGIN=true</code>. Forbidden in hosted mode.</p>
         <form method="post" action="/teacher/dev-login">
           <label>Email
             <input type="email" name="email" required placeholder="teacher@school.edu" autocomplete="username" />
@@ -525,16 +525,22 @@ export function createTeacherPortal({
   env = {},
   initialState = {},
   persistState,
-  respondCorsHeaders = () => ({})
+  respondCorsHeaders = () => ({}),
+  deploymentPolicy = null
 } = {}) {
-  const google = resolveGoogleConfig(env);
+  const google = resolveGoogleConfig(env, deploymentPolicy);
   const store = createTeacherPortalStore(sanitiseTeacherPortalState(initialState), {
     persist: persistState
   });
   const sessions = createTeacherSessionStore();
   const oauthStates = new Map();
 
-  const isSecureRequest = (requestUrl) => String(requestUrl.protocol || "").startsWith("https");
+  const isSecureRequest = (requestUrl) => {
+    if (deploymentPolicy && deploymentPolicy.publicOrigin) {
+      return String(deploymentPolicy.publicOrigin).startsWith("https://");
+    }
+    return String(requestUrl.protocol || "").startsWith("https");
+  };
 
   const getTeacherFromRequest = (request) => {
     const cookies = parseCookies(request.headers.get("cookie"));
@@ -559,7 +565,10 @@ export function createTeacherPortal({
 
   const resolveRedirectUri = (publicOrigin) => {
     if (google.configuredRedirect) return google.configuredRedirect;
-    return `${publicOrigin.replace(/\/+$/, "")}/teacher/auth/google/callback`;
+    const origin = (deploymentPolicy && deploymentPolicy.publicOrigin)
+      || publicOrigin
+      || "";
+    return `${String(origin).replace(/\/+$/, "")}/teacher/auth/google/callback`;
   };
 
   const handle = async (request, {
