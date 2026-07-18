@@ -15,9 +15,11 @@ import { callOpenAICompatible, providerConfigFromClassroom } from "./openai-comp
 import { createTeacherPortal } from "./teacher-portal.mjs";
 import {
   createDeploymentPolicy,
-  resolveRequestPublicOrigin
+  resolveRequestPublicOrigin,
+  resolveTrustedClientIp
 } from "./deployment-policy.mjs";
 import { createOutboundUrlPolicy } from "./outbound-url-policy.mjs";
+import { createRateLimitController } from "./rate-limit.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
@@ -1489,6 +1491,16 @@ export function createBackendRuntime(options = {}) {
     || createOutboundUrlPolicy(env, {
       dnsLookup: typeof options.dnsLookup === "function" ? options.dnsLookup : undefined
     });
+  const rateLimits = options.rateLimits
+    || createRateLimitController(env, {
+      now: typeof options.now === "function" ? options.now : undefined,
+      persistDailyUsage: typeof options.persistDailyUsage === "function"
+        ? options.persistDailyUsage
+        : undefined,
+      loadDailyUsage: typeof options.loadDailyUsage === "function"
+        ? options.loadDailyUsage
+        : undefined
+    });
   const teacherPortal = createTeacherPortal({
     env,
     initialState: options.teacherPortalState || {},
@@ -1531,7 +1543,25 @@ export function createBackendRuntime(options = {}) {
     return providerConfigFromClassroom(classroom);
   };
 
+  const respondRateLimited = (origin, decision) => new Response(JSON.stringify({
+    error: "Too many requests. Please wait and try again.",
+    reason: decision.reason || "rate_limited"
+  }), {
+    status: 429,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Retry-After": String(Math.max(1, Number(decision.retryAfterSeconds) || 1)),
+      ...buildCorsHeaders(origin, runtimeConfig)
+    }
+  });
+
   const handleConnect = async (request, origin) => {
+    const clientIp = resolveTrustedClientIp(request, deployment) || "local";
+    const connectLimit = rateLimits.checkConnect({ clientIp });
+    if (!connectLimit.ok) {
+      return respondRateLimited(origin, connectLimit);
+    }
+
     const authMode = getAuthMode(runtimeConfig);
     const body = await readJson(request, 16 * 1024);
     const providedCode = body && (body.classCode || body.code);
@@ -1782,9 +1812,25 @@ export function createBackendRuntime(options = {}) {
           }, origin, runtimeConfig);
         }
 
-        const providerConfig = await resolveProviderConfigForSession(session);
-        const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
-        return respondJson(200, result, origin, runtimeConfig);
+        const sessionToken = session
+          ? (String(request.headers.get("x-vibbit-session") || "").trim()
+            || extractBearerToken(request.headers.get("authorization")))
+          : "";
+        const reservation = await rateLimits.reserveGenerate({
+          sessionToken,
+          classroomId
+        });
+        if (!reservation.ok) {
+          return respondRateLimited(origin, reservation);
+        }
+
+        try {
+          const providerConfig = await resolveProviderConfigForSession(session);
+          const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
+          return respondJson(200, result, origin, runtimeConfig);
+        } finally {
+          if (typeof reservation.release === "function") reservation.release();
+        }
       } catch (error) {
         if (error && Number.isFinite(error.statusCode)) {
           return respondJson(error.statusCode, {
