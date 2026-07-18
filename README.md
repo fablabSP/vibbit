@@ -8,13 +8,13 @@ This repo ships one Vibbit runtime supporting both:
 ## Managed classroom flow
 
 1. Teacher runs or deploys the backend (`apps/backend/`).
-2. Teacher shares only:
+2. Teacher opens `/teacher`, signs in (Google or local/dev login), and saves an OpenAI-compatible API base URL + key.
+3. Teacher mints a classroom code and shares only:
    - server URL
-   - class code
-3. Teacher can inspect backend status at `/admin` (using `/admin?admin=<ADMINTOKEN>`).
+   - classroom code
 4. Students open Vibbit in MakeCode, choose `Managed`, and enter URL + class code.
 5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
-6. Provider keys stay on the server.
+6. Provider keys stay on the server (per classroom). Optional operator panel: `/admin?admin=<ADMINTOKEN>`.
 
 ## Supported keys and endpoints
 
@@ -24,13 +24,15 @@ This repo ships one Vibbit runtime supporting both:
   - `POST {BACKEND}/vibbit/generate`
 - Session bootstrap endpoint:
   - `POST {BACKEND}/vibbit/connect`
-- Admin endpoints:
+- Teacher / admin endpoints:
   - `GET {BACKEND}/` (informational landing page)
+  - `GET {BACKEND}/teacher` (teacher login + mint classroom codes)
   - `GET {BACKEND}/admin`
   - `GET {BACKEND}/admin/status`
   - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
+- Teacher classrooms accept any OpenAI-compatible base URL (OpenAI, OpenRouter, LiteLLM, Claude-compatible proxies).
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
   - optional managed overrides: `provider`, `model`

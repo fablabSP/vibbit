@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createBackendRuntime } from "./runtime.mjs";
+import { sanitiseTeacherPortalState } from "./classroom-store.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_FILE = resolve(process.env.VIBBIT_STATE_FILE || ".vibbit-backend-state.json");
@@ -29,6 +30,10 @@ function createAdminAuthToken() {
   return "vba_" + randomBytes(24).toString("base64url");
 }
 
+function persistState(next) {
+  writeStateFile(STATE_FILE, next);
+}
+
 let persistedState = readStateFile(STATE_FILE);
 const envAdminAuthToken = String(process.env.VIBBIT_ADMIN_TOKEN || "").trim();
 let adminAuthToken = envAdminAuthToken || String(persistedState.adminAuthToken || "").trim();
@@ -36,26 +41,46 @@ if (!adminAuthToken) {
   adminAuthToken = createAdminAuthToken();
   persistedState = {
     ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
     adminAuthToken
   };
-  writeStateFile(STATE_FILE, persistedState);
+  persistState(persistedState);
+}
+
+const teacherPortalState = sanitiseTeacherPortalState(persistedState.teacherPortalState || {
+  teachers: persistedState.teachers,
+  classrooms: persistedState.classrooms
+});
+
+function writePersistedSlice(mutator) {
+  const base = {
+    ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
+    version: 2,
+    updatedAt: new Date().toISOString(),
+    adminAuthToken,
+    teacherPortalState: (persistedState && persistedState.teacherPortalState) || teacherPortalState
+  };
+  persistedState = mutator(base);
+  persistState(persistedState);
 }
 
 const runtime = createBackendRuntime({
   env: process.env,
   adminAuthToken,
   adminProviderState: persistedState.adminProviderState || {},
+  teacherPortalState,
   persistAdminProviderState: async (nextAdminProviderState) => {
-    persistedState = {
-      ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      adminAuthToken,
+    writePersistedSlice((current) => ({
+      ...current,
       adminProviderState: nextAdminProviderState
-    };
-    writeStateFile(STATE_FILE, persistedState);
+    }));
+  },
+  persistTeacherPortalState: async (nextTeacherPortalState) => {
+    writePersistedSlice((current) => ({
+      ...current,
+      teacherPortalState: sanitiseTeacherPortalState(nextTeacherPortalState)
+    }));
   }
 });
 
@@ -98,9 +123,21 @@ function toFetchRequest(req) {
 
 async function sendFetchResponse(res, response) {
   res.statusCode = response.status;
+  const setCookieValues = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : [];
+
   response.headers.forEach((value, key) => {
+    if (String(key).toLowerCase() === "set-cookie") return;
     res.setHeader(key, value);
   });
+
+  if (setCookieValues.length) {
+    res.setHeader("Set-Cookie", setCookieValues);
+  } else {
+    const single = response.headers.get("set-cookie");
+    if (single) res.setHeader("Set-Cookie", single);
+  }
 
   if (!response.body) {
     res.end();

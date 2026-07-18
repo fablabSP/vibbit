@@ -40,7 +40,7 @@ test("redirects favicon ico requests to the matching svg path", async () => {
 });
 
 test("renders relative favicon links on html pages for prefix-safe resolution", async () => {
-  const pages = ["/", "/bookmarklet", "/admin", "/api/bookmarklet", "/api/admin"];
+  const pages = ["/", "/bookmarklet", "/admin", "/teacher", "/api/bookmarklet", "/api/admin", "/api/teacher"];
 
   for (const pathname of pages) {
     const response = await fetchRuntime(pathname);

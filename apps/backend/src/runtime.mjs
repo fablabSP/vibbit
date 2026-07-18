@@ -11,6 +11,8 @@ import {
   stubForTarget,
   validateBlocksCompatibility
 } from "../../../shared/makecode-compat-core.mjs";
+import { callOpenAICompatible, providerConfigFromClassroom } from "./openai-compat.mjs";
+import { createTeacherPortal } from "./teacher-portal.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
@@ -348,16 +350,23 @@ function createSessionStore(ttlMs) {
     return { token, expiresAt };
   };
 
-  const isValidSession = (token) => {
-    if (!token) return false;
+  const getSession = (token) => {
+    if (!token) return null;
     pruneExpired();
     const entry = sessions.get(token);
-    if (!entry) return false;
-    return entry.expiresAt > Date.now();
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      sessions.delete(token);
+      return null;
+    }
+    return entry;
   };
+
+  const isValidSession = (token) => Boolean(getSession(token));
 
   return {
     createSession,
+    getSession,
     isValidSession,
     pruneExpired,
     size: () => sessions.size
@@ -403,9 +412,7 @@ function createRuntimeConfig(envInput = {}) {
   const classroomCode = classroomEnabled
     ? (configuredCode || (autoGenerateCode ? generateClassCodeFromSeed(classCodeSeed, classCodeLength) : ""))
     : "";
-  if (classroomEnabled && !classroomCode) {
-    throw new Error("Classroom auth is enabled but no class code is available.");
-  }
+  // Legacy single-code mode may be empty when teachers mint codes via /teacher.
 
   const sessionTtlMs = parseInteger(env.VIBBIT_SESSION_TTL_MS, 8 * 60 * 60 * 1000, {
     min: 5 * 60 * 1000,
@@ -556,30 +563,15 @@ function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
   });
 }
 
-async function callOpenAI(key, model, system, user, signal) {
-  const body = {
+async function callOpenAI(key, model, system, user, signal, baseUrl = "") {
+  return callOpenAICompatible({
+    apiKey: key,
+    baseUrl: baseUrl || "https://api.openai.com/v1",
     model,
-    temperature: 0.1,
-    max_tokens: 3072,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }]
-  };
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + key
-    },
-    body: JSON.stringify(body)
+    system,
+    user,
+    signal
   });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
 }
 
 async function callOpenRouter(key, model, system, user, signal) {
@@ -634,12 +626,18 @@ async function callGemini(key, model, system, user, signal) {
 }
 
 async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig, providerConfig) {
-  const selected = resolveProviderSelection(providerConfig || runtimeConfig.providerConfig, provider, model);
+  const effectiveProviderConfig = providerConfig || runtimeConfig.providerConfig;
+  const selected = resolveProviderSelection(effectiveProviderConfig, provider, model);
+  const openAiBaseUrl = typeof effectiveProviderConfig.baseUrlFor === "function"
+    ? effectiveProviderConfig.baseUrlFor(selected.provider)
+    : "";
 
   const system = buildSystemPrompt(target);
   const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
   const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
-    if (selected.provider === "openai") return callOpenAI(selected.key, selected.model, systemPrompt, user, signal);
+    if (selected.provider === "openai") {
+      return callOpenAI(selected.key, selected.model, systemPrompt, user, signal, openAiBaseUrl);
+    }
     if (selected.provider === "gemini") return callGemini(selected.key, selected.model, systemPrompt, user, signal);
     if (selected.provider === "openrouter") return callOpenRouter(selected.key, selected.model, systemPrompt, user, signal);
     throw new Error(`Unsupported provider '${selected.provider}'`);
@@ -1047,6 +1045,13 @@ function renderLandingPage({
           <h1>Vibbit</h1>
         </div>
         <p class="intro">Vibbit is an AI coding assistant for micro:bit MakeCode, available as a Chrome extension and bookmarklet, with both managed backend mode and BYOK provider support.</p>
+        <div class="cta-row">
+          <a class="action action-primary" href="/teacher">Teacher portal</a>
+          ${canUseBookmarklet
+            ? `<a class="action action-secondary" href="${escapeHtml(BOOKMARKLET_INSTALL_ROUTE)}">Bookmarklet</a>`
+            : ""}
+        </div>
+        <p style="color: var(--muted);">Teachers sign in, add an OpenAI-compatible API key, and mint a classroom code for students.</p>
       </section>
 
       <section class="grid">
@@ -1285,6 +1290,13 @@ function isClassroomCodeValid(candidate, runtimeConfig) {
   return normaliseClassCode(candidate) === runtimeConfig.classroomCode;
 }
 
+function getRequestSession(request, sessionStore) {
+  const authHeader = request.headers.get("authorization");
+  const bearer = extractBearerToken(authHeader);
+  const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
+  return sessionStore.getSession(sessionHeader) || sessionStore.getSession(bearer) || null;
+}
+
 function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
   const authMode = getAuthMode(runtimeConfig);
   if (authMode === "none") return true;
@@ -1297,11 +1309,7 @@ function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
   }
 
   if (authMode === "classroom") {
-    const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
-    if (sessionStore.isValidSession(sessionHeader) || sessionStore.isValidSession(bearer)) {
-      return true;
-    }
-    return false;
+    return Boolean(getRequestSession(request, sessionStore));
   }
 
   return false;
@@ -1316,7 +1324,10 @@ function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } 
   ];
   if (listenUrl) info.unshift(`[Vibbit backend] Listening on ${listenUrl}`);
   if (getAuthMode(runtimeConfig) === "classroom") {
-    info.push(`[Vibbit backend] Share with students -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+    if (runtimeConfig.classroomCode) {
+      info.push(`[Vibbit backend] Legacy class code -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+    }
+    info.push(`[Vibbit backend] Teachers mint classroom codes at ${(listenUrl || "<your-server-url>")}/teacher`);
   }
   if (runtimeConfig.bookmarkletEnabled) {
     info.push(`[Vibbit backend] Bookmarklet install page -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_INSTALL_ROUTE}`);
@@ -1443,16 +1454,42 @@ export function createBackendRuntime(options = {}) {
   const persistAdminProviderState = typeof options.persistAdminProviderState === "function"
     ? options.persistAdminProviderState
     : (() => Promise.resolve());
+  const persistTeacherPortalState = typeof options.persistTeacherPortalState === "function"
+    ? options.persistTeacherPortalState
+    : (() => Promise.resolve());
   let adminProviderState = sanitiseAdminProviderState(
     options.adminProviderState || createEmptyAdminProviderState(),
     runtimeConfig.providerConfig.enabledProviders
   );
+  const teacherPortal = createTeacherPortal({
+    env,
+    initialState: options.teacherPortalState || {},
+    persistState: persistTeacherPortalState,
+    respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig)
+  });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
+
+  const resolveProviderConfigForSession = (session) => {
+    const classroomId = session && session.meta && session.meta.classroomId
+      ? String(session.meta.classroomId)
+      : "";
+    if (!classroomId) return getEffectiveProviderConfig();
+    const classroom = teacherPortal.store.getClassroom(classroomId);
+    if (!classroom || !classroom.enabled) {
+      throw Object.assign(new Error("Classroom session is no longer valid"), { statusCode: 401 });
+    }
+    if (!classroom.apiKey) {
+      throw Object.assign(new Error("Classroom is missing an API key"), { statusCode: 503 });
+    }
+    return providerConfigFromClassroom(classroom);
+  };
 
   const handleConnect = async (request, origin) => {
     const authMode = getAuthMode(runtimeConfig);
     const body = await readJson(request, 16 * 1024);
     const providedCode = body && (body.classCode || body.code);
+    let classroomId = "";
+    let publicProviderConfig = getEffectiveProviderConfig();
 
     if (authMode === "app-token") {
       const token = extractBearerToken(request.headers.get("authorization"));
@@ -1461,18 +1498,32 @@ export function createBackendRuntime(options = {}) {
       }
     } else if (authMode === "classroom") {
       const classHeader = request.headers.get("x-vibbit-class-code");
-      if (!isClassroomCodeValid(providedCode || classHeader, runtimeConfig)) {
+      const candidateCode = providedCode || classHeader;
+      const teacherClassroom = teacherPortal.store.findClassroomByCode(candidateCode);
+      if (teacherClassroom) {
+        if (!teacherClassroom.apiKey) {
+          return respondJson(503, {
+            error: "Classroom is not ready yet. Ask your teacher to save an API key."
+          }, origin, runtimeConfig);
+        }
+        classroomId = teacherClassroom.id;
+        publicProviderConfig = getPublicServerConfig(
+          runtimeConfig,
+          providerConfigFromClassroom(teacherClassroom)
+        );
+      } else if (!isClassroomCodeValid(candidateCode, runtimeConfig)) {
         return respondJson(401, { error: "Invalid class code" }, origin, runtimeConfig);
       }
     }
 
     const session = sessionStore.createSession({
-      student: String((body && body.student) || "").trim().slice(0, 120)
+      student: String((body && body.student) || "").trim().slice(0, 120),
+      classroomId
     });
 
     return respondJson(200, {
       ok: true,
-      ...getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig()),
+      ...publicProviderConfig,
       sessionToken: session.token,
       expiresAt: new Date(session.expiresAt).toISOString()
     }, origin, runtimeConfig);
@@ -1590,6 +1641,16 @@ export function createBackendRuntime(options = {}) {
       }
     }
 
+    if (pathname === "/teacher" || pathname.startsWith("/teacher/")) {
+      const teacherResponse = await teacherPortal.handle(request, {
+        pathname,
+        origin,
+        publicOrigin: resolvePublicOrigin(request, requestUrl),
+        requestUrl
+      });
+      if (teacherResponse) return teacherResponse;
+    }
+
     if (pathname === "/admin" && request.method === "GET") {
       if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken)) {
         return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
@@ -1650,9 +1711,16 @@ export function createBackendRuntime(options = {}) {
           return respondJson(400, { error: validated.error }, origin, runtimeConfig);
         }
 
-        const result = await generateManaged(validated.value, runtimeConfig, getEffectiveProviderConfig());
+        const session = getRequestSession(request, sessionStore);
+        const providerConfig = resolveProviderConfigForSession(session);
+        const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
         return respondJson(200, result, origin, runtimeConfig);
       } catch (error) {
+        if (error && Number.isFinite(error.statusCode)) {
+          return respondJson(error.statusCode, {
+            error: error.message || "Request failed"
+          }, origin, runtimeConfig);
+        }
         const { status, message } = classifyRequestError(error, runtimeConfig);
         return respondJson(status, { error: message }, origin, runtimeConfig);
       }
@@ -1664,9 +1732,16 @@ export function createBackendRuntime(options = {}) {
   return {
     config: runtimeConfig,
     fetch: fetchHandler,
-    getStartupInfo: (options) => buildStartupInfo(runtimeConfig, {
-      ...(options || {}),
-      effectiveProviderConfig: getEffectiveProviderConfig()
-    })
+    teacherPortal,
+    getStartupInfo: (options) => {
+      const listenUrl = options && options.listenUrl;
+      return [
+        ...buildStartupInfo(runtimeConfig, {
+          ...(options || {}),
+          effectiveProviderConfig: getEffectiveProviderConfig()
+        }),
+        ...teacherPortal.getStartupLines(listenUrl)
+      ];
+    }
   };
 }
