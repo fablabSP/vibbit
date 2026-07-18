@@ -77,19 +77,23 @@ test("generate accepts empty request when pageErrors are present", async () => {
   const { sessionToken } = await connect.json();
 
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    choices: [{
-      message: {
-        content: JSON.stringify({
-          feedback: ["fixed"],
-          code: "basic.showIcon(IconNames.Heart)"
-        })
-      }
-    }]
-  }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" }
-  });
+  let capturedProviderBody = "";
+  globalThis.fetch = async (_url, init = {}) => {
+    capturedProviderBody = String(init.body || "");
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            feedback: ["fixed"],
+            code: "basic.showIcon(IconNames.Heart)"
+          })
+        }
+      }]
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
 
   try {
     const generate = await runtime.fetch(new Request("https://example.test/vibbit/generate", {
@@ -105,6 +109,7 @@ test("generate accepts empty request when pageErrors are present", async () => {
       })
     }));
     assert.equal(generate.status, 200);
+    assert.match(capturedProviderBody, /Type 'foo' is not defined/);
   } finally {
     globalThis.fetch = originalFetch;
   }

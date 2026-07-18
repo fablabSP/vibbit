@@ -389,8 +389,8 @@ test("P1-06A: classroom daily quota is isolated per classroom", async () => {
 test("reserveGenerate rolls back counters when persistDailyUsage rejects", async () => {
   let failPersist = true;
   const controller = createRateLimitController({
-    VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "100",
-    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+    VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "1",
+    VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "1",
     VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "100",
     VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
     VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
@@ -412,8 +412,9 @@ test("reserveGenerate rolls back counters when persistDailyUsage rejects", async
   );
   assert.equal(controller.getClassroomDayUsage("cls_rate_a"), 0);
 
+  // Same session/classroom must succeed after bucket capacity is restored.
   const afterFailure = await controller.reserveGenerate({
-    sessionToken: "session-after-rollback",
+    sessionToken: "session-rollback",
     classroomId: "cls_rate_a"
   });
   assert.equal(afterFailure.ok, true);

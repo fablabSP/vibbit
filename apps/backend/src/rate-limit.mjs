@@ -38,6 +38,12 @@ export function createTokenBucket({
       }
       tokens -= cost;
       return { ok: true, retryAfterSeconds: 0 };
+    },
+    refund(cost = 1) {
+      const current = now();
+      const elapsed = Math.max(0, (current - updatedAt) / 1000);
+      tokens = Math.min(capacity, tokens + (elapsed * refillPerSecond) + Math.max(0, cost));
+      updatedAt = current;
     }
   };
 }
@@ -170,32 +176,45 @@ export function createRateLimitController(envInput = {}, {
       // Canonical session id only — never trust raw request headers for bucket keys.
       const canonicalSession = String(sessionToken || "").trim();
       const sessionKey = `generate:session:${canonicalSession || "anonymous"}`;
-      const sessionResult = bucket(
+      const sessionBucket = bucket(
         sessionKey,
         config.generatePerSessionPerMinute,
         config.generatePerSessionPerMinute
-      ).take(1);
+      );
+      const sessionResult = sessionBucket.take(1);
       if (!sessionResult.ok) return reject(sessionResult.retryAfterSeconds, "generate_session");
 
       const classKey = `generate:classroom:${classroomId || "legacy"}`;
-      const classResult = bucket(
+      const classBucket = bucket(
         classKey,
         config.generatePerClassroomPerMinute,
         config.generatePerClassroomPerMinute
-      ).take(1);
-      if (!classResult.ok) return reject(classResult.retryAfterSeconds, "generate_classroom");
+      );
+      const classResult = classBucket.take(1);
+      if (!classResult.ok) {
+        sessionBucket.refund(1);
+        return reject(classResult.retryAfterSeconds, "generate_classroom");
+      }
+
+      const refundBuckets = () => {
+        sessionBucket.refund(1);
+        classBucket.refund(1);
+      };
 
       const dayKey = dayCountKey(classroomId);
       const used = classroomDayCounts.get(dayKey) || 0;
       if (used >= config.generatePerClassroomPerDay) {
+        refundBuckets();
         return reject(60, "generate_daily_quota");
       }
 
       const inFlight = classroomInFlight.get(classroomId || "legacy") || 0;
       if (inFlight >= config.concurrentPerClassroom) {
+        refundBuckets();
         return reject(1, "generate_classroom_concurrency");
       }
       if (globalInFlight >= config.concurrentGlobal) {
+        refundBuckets();
         return reject(1, "generate_global_concurrency");
       }
 
@@ -209,6 +228,7 @@ export function createRateLimitController(envInput = {}, {
         else classroomDayCounts.set(dayKey, used);
         classroomInFlight.set(classroomId || "legacy", inFlight);
         globalInFlight = Math.max(0, globalInFlight - 1);
+        refundBuckets();
         throw error;
       }
 

@@ -4,6 +4,7 @@ import { callManagedProvider } from "./provider-registry.mjs";
 
 test("callManagedProvider sends Gemini API key in x-goog-api-key header", async () => {
   let capturedUrl = "";
+  let capturedMethod = "";
   let capturedHeaders = {};
 
   await callManagedProvider({
@@ -14,7 +15,8 @@ test("callManagedProvider sends Gemini API key in x-goog-api-key header", async 
     user: "user prompt",
     fetchImpl: async (url, init) => {
       capturedUrl = String(url);
-      capturedHeaders = init.headers || {};
+      capturedMethod = String((init && init.method) || "GET").toUpperCase();
+      capturedHeaders = (init && init.headers) || {};
       return new Response(JSON.stringify({
         candidates: [{
           content: { parts: [{ text: "generated text" }] }
@@ -26,7 +28,11 @@ test("callManagedProvider sends Gemini API key in x-goog-api-key header", async 
     }
   });
 
+  const parsed = new URL(capturedUrl);
+  assert.equal(capturedMethod, "POST");
+  assert.equal(parsed.hostname, "generativelanguage.googleapis.com");
+  assert.match(parsed.pathname, /\/models\/gemini-2\.5-flash:generateContent$/);
+  assert.equal(parsed.searchParams.has("key"), false);
   assert.ok(!capturedUrl.includes("key="));
-  assert.match(capturedUrl, /generativelanguage\.googleapis\.com/);
   assert.equal(capturedHeaders["x-goog-api-key"], "gem-key");
 });
