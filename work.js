@@ -1,4 +1,5 @@
 const BACKEND = "https://vibbit.dev.tk.sg";
+const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {
@@ -102,9 +103,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
     ? window.__vibbitBookmarkletConfig
     : {};
+  const hostedManaged = HOSTED_MANAGED === true || bookmarkletConfig.hostedManaged === true;
   const launchPanelOnLoad = bookmarkletConfig.__launchPanelOnLoad === true;
-  const enableManagedMode = bookmarkletConfig.enableManaged !== false;
-  const enableByokMode = bookmarkletConfig.enableByok !== false;
+  const enableManagedMode = hostedManaged || bookmarkletConfig.enableManaged !== false;
+  const enableByokMode = hostedManaged ? false : bookmarkletConfig.enableByok !== false;
   const configuredForceMode = String(bookmarkletConfig.forceMode || "").trim().toLowerCase();
   const modeFlags = {
     managed: enableManagedMode,
@@ -115,7 +117,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     modeFlags[configuredForceMode] = true;
   }
   const fallbackMode = modeFlags.managed ? "managed" : "byok";
-  const forceMode = modeFlags[configuredForceMode] ? configuredForceMode : "";
+  const forceMode = hostedManaged
+    ? "managed"
+    : (modeFlags[configuredForceMode] ? configuredForceMode : "");
   const coerceMode = (value) => {
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "managed" && modeFlags.managed) return "managed";
@@ -208,7 +212,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* Managed: server URL */
     + '  <div id="setup-managed-server" style="display:none">'
-    + '    <div style="display:grid;gap:4px">'
+    + '    <div id="setup-managed-server-url" style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
@@ -311,7 +315,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* Managed: server URL */
     + '  <div id="set-managed-server" style="display:none">'
-    + '    <div style="display:grid;gap:4px">'
+    + '    <div id="set-managed-server-url" style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
@@ -465,6 +469,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupByokModel = $("#setup-byok-model");
   const setupByokKey = $("#setup-byok-key");
   const setupManagedServer = $("#setup-managed-server");
+  const setupManagedServerUrl = $("#setup-managed-server-url");
   const setupModeRow = $("#setup-mode-row");
   const setupGo = $("#setup-go");
 
@@ -503,6 +508,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setByokModel = $("#set-byok-model");
   const setByokKey = $("#set-byok-key");
   const setManagedServer = $("#set-managed-server");
+  const setManagedServerUrl = $("#set-managed-server-url");
   const setModeRow = $("#set-mode-row");
   const saveBtn = $("#save");
   const backBtn = $("#back");
@@ -540,20 +546,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     refs.byokModel.style.display = isByok ? "grid" : "none";
     refs.byokKey.style.display = isByok ? "grid" : "none";
     refs.managedServer.style.display = isByok ? "none" : "grid";
+    if (refs.managedServerUrl) {
+      refs.managedServerUrl.style.display = hostedManaged ? "none" : "grid";
+    }
   };
 
   const setupModeRefs = {
     byokProvider: setupByokProvider,
     byokModel: setupByokModel,
     byokKey: setupByokKey,
-    managedServer: setupManagedServer
+    managedServer: setupManagedServer,
+    managedServerUrl: setupManagedServerUrl
   };
 
   const settingsModeRefs = {
     byokProvider: setByokProvider,
     byokModel: setByokModel,
     byokKey: setByokKey,
-    managedServer: setManagedServer
+    managedServer: setManagedServer,
+    managedServerUrl: setManagedServerUrl
   };
 
   const filterModeOptions = (selectEl) => {
@@ -574,7 +585,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   filterModeOptions(setupMode);
   filterModeOptions(setMode);
-  const showModePicker = modeFlags.byok && modeFlags.managed;
+  const showModePicker = !hostedManaged && modeFlags.byok && modeFlags.managed;
   if (setupModeRow) setupModeRow.style.display = showModePicker ? "grid" : "none";
   if (setModeRow) setModeRow.style.display = showModePicker ? "grid" : "none";
 
@@ -1251,6 +1262,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const getBackendUrl = () => {
+    if (hostedManaged) return normaliseServerUrl(BACKEND) || BACKEND;
     const configured = normaliseServerUrl(storageGet(STORAGE_SERVER));
     if (configured) return configured;
     return normaliseServerUrl(BACKEND) || BACKEND;
@@ -1320,7 +1332,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       storageSet(STORAGE_MODEL, setupModel.value);
       setStoredProviderKey(setupProv.value, key);
     } else {
-      const server = setupServer.value.trim() || DEFAULT_SERVER;
+      const server = hostedManaged
+        ? DEFAULT_SERVER
+        : (setupServer.value.trim() || DEFAULT_SERVER);
       storageSet(STORAGE_SERVER, server);
       const classCode = storeClassCode(setupClassCode.value);
       setupClassCode.value = classCode;

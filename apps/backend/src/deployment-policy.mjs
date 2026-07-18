@@ -92,9 +92,13 @@ export function createDeploymentPolicy(envInput = {}) {
         "Hosted mode requires VIBBIT_PUBLIC_ORIGIN (pathless https origin)."
       );
     }
-    if (!googleEnabled) {
+    const magicLinkConfigured = Boolean(
+      String(env.VIBBIT_RESEND_API_KEY || env.RESEND_API_KEY || "").trim()
+    ) || parseBoolean(env.VIBBIT_MAGIC_LINK_DEV_CAPTURE, false);
+    const magicLinkEnabled = parseBoolean(env.VIBBIT_MAGIC_LINK_ENABLED, magicLinkConfigured);
+    if (!googleEnabled && !(magicLinkEnabled && magicLinkConfigured)) {
       throw new Error(
-        "Hosted mode requires VIBBIT_GOOGLE_CLIENT_ID and VIBBIT_GOOGLE_CLIENT_SECRET."
+        "Hosted mode requires Google OAuth or configured magic-link email sign-in."
       );
     }
     // Fail closed: hosted always encrypts credentials at rest.

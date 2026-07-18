@@ -26,12 +26,15 @@ const makecodeHostPermissions = [
 const userscriptHeaderPattern = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
 
 function overrideConst(source, name, value) {
-  const pattern = new RegExp(`const ${name} = ".*?";`);
-  if (!pattern.test(source)) {
-    throw new Error(`Could not find ${name} declaration in work.js`);
+  const stringPattern = new RegExp(`const ${name} = ".*?";`);
+  const boolPattern = new RegExp(`const ${name} = (?:true|false);`);
+  if (stringPattern.test(source)) {
+    return source.replace(stringPattern, `const ${name} = ${JSON.stringify(value)};`);
   }
-
-  return source.replace(pattern, `const ${name} = ${JSON.stringify(value)};`);
+  if (boolPattern.test(source)) {
+    return source.replace(boolPattern, `const ${name} = ${value === true ? "true" : "false"};`);
+  }
+  throw new Error(`Could not find ${name} declaration in work.js`);
 }
 
 function hostPermissionForBackend(backend) {
@@ -55,14 +58,25 @@ async function build() {
   builtClient = builtClient.replaceAll(frogDataUriToken, frogDataUri);
   const manifest = JSON.parse(rawManifest);
 
-  const backend = process.env.VIBBIT_BACKEND;
+  const buildProfile = String(process.env.VIBBIT_BUILD_PROFILE || "").trim().toLowerCase();
+  const hostedManagedProfile = buildProfile === "hosted-managed";
+  let backend = process.env.VIBBIT_BACKEND;
   const appToken = process.env.VIBBIT_APP_TOKEN;
+
+  if (hostedManagedProfile) {
+    if (!backend || !/^https:\/\//i.test(String(backend).trim())) {
+      throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed requires VIBBIT_BACKEND to be an https URL");
+    }
+    builtClient = overrideConst(builtClient, "HOSTED_MANAGED", true);
+    backend = String(backend).trim();
+  }
 
   if (backend) {
     builtClient = overrideConst(builtClient, "BACKEND", backend);
     const backendPermission = hostPermissionForBackend(backend);
+    const optionalByokPermissions = hostedManagedProfile ? [] : byokHostPermissions;
     // Preserve MakeCode host permissions for toolbar-click flow
-    manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...byokHostPermissions])];
+    manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...optionalByokPermissions])];
   }
 
   if (appToken !== undefined) {
@@ -92,9 +106,12 @@ async function build() {
   ]);
 
   console.log("Built Chrome extension files in dist/");
+  if (hostedManagedProfile) {
+    console.log("- HOSTED_MANAGED enabled via VIBBIT_BUILD_PROFILE=hosted-managed");
+  }
   if (backend) {
     console.log(`- BACKEND overridden via VIBBIT_BACKEND: ${backend}`);
-    console.log(`- host_permissions set to: ${manifest.host_permissions[0]}`);
+    console.log(`- host_permissions: ${manifest.host_permissions.join(", ")}`);
   }
   if (appToken !== undefined) {
     console.log("- APP_TOKEN overridden via VIBBIT_APP_TOKEN");

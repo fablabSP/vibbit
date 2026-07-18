@@ -5,6 +5,7 @@ import {
   createOutboundUrlPolicy,
   isBlockedIpAddress
 } from "./outbound-url-policy.mjs";
+import { followTeacherForm } from "./teacher-test-helpers.mjs";
 
 const PUBLIC_DNS_ADDRESS = "203.0.113.10";
 const FAKE_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64url");
@@ -63,26 +64,6 @@ async function assertRejectsUrl(policy, url, pattern) {
       return true;
     }
   );
-}
-
-async function followTeacherForm(runtime, path, body, cookie = "") {
-  const response = await runtime.fetch(new Request(`https://example.test${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      ...(cookie ? { Cookie: cookie } : {})
-    },
-    body: new URLSearchParams(body).toString(),
-    redirect: "manual"
-  }));
-  const setCookie = typeof response.headers.getSetCookie === "function"
-    ? response.headers.getSetCookie()
-    : [];
-  const cookieHeader = setCookie
-    .map((item) => String(item).split(";")[0])
-    .filter(Boolean)
-    .join("; ");
-  return { response, cookieHeader };
 }
 
 test("rejects http in hosted and default self-hosted", async () => {

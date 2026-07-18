@@ -10,6 +10,12 @@ import {
   stubForTarget,
   validateBlocksCompatibility
 } from "../../../shared/makecode-compat-core.mjs";
+import {
+  joinHtmlResponse,
+  renderJoinAvailablePage,
+  renderJoinUnavailablePage,
+  resolveJoinAvailability
+} from "./join-page.mjs";
 import { createTeacherPortal } from "./teacher-portal.mjs";
 import {
   createDeploymentPolicy,
@@ -1746,6 +1752,22 @@ export function createBackendRuntime(options = {}) {
         requestUrl
       });
       if (teacherResponse) return teacherResponse;
+    }
+
+    const joinMatch = pathname.match(/^\/join\/([A-Za-z0-9]{5})$/);
+    if (joinMatch && request.method === "GET") {
+      const corsHeaders = buildCorsHeaders(origin, runtimeConfig);
+      const joinCode = joinMatch[1];
+      const availability = resolveJoinAvailability(teacherPortal.store, joinCode);
+      const html = availability.available
+        ? renderJoinAvailablePage({
+          code: availability.code,
+          publicOrigin: publicOriginFor(request, requestUrl),
+          bookmarkletPath: BOOKMARKLET_INSTALL_ROUTE,
+          extensionPath: EXTENSION_DOWNLOAD_ROUTE
+        })
+        : renderJoinUnavailablePage();
+      return joinHtmlResponse(200, html, { corsHeaders });
     }
 
     if (pathname === "/admin" || pathname.startsWith("/admin/")) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createBackendRuntime } from "./runtime.mjs";
 import { normaliseClassCode } from "./classroom-store.mjs";
+import { followTeacherForm } from "./teacher-test-helpers.mjs";
 
 const seededTeacher = {
   id: "local:teacher@school.edu",
@@ -52,26 +53,6 @@ function createSessionAuthorityRuntime({
   });
 
   return { runtime, persistedStates };
-}
-
-async function followTeacherForm(runtime, path, body, cookie = "") {
-  const response = await runtime.fetch(new Request(`https://example.test${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      ...(cookie ? { Cookie: cookie } : {})
-    },
-    body: new URLSearchParams(body).toString(),
-    redirect: "manual"
-  }));
-  const setCookie = typeof response.headers.getSetCookie === "function"
-    ? response.headers.getSetCookie()
-    : [];
-  const cookieHeader = setCookie
-    .map((item) => String(item).split(";")[0])
-    .filter(Boolean)
-    .join("; ");
-  return { response, cookieHeader };
 }
 
 async function teacherLogin(runtime) {

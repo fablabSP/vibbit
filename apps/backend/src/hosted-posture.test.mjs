@@ -125,15 +125,18 @@ test("hosted startup: VIBBIT_TEACHER_DEV_LOGIN=true is forbidden", () => {
   );
 });
 
-test("hosted startup: Google OAuth credentials are required", () => {
+test("hosted startup: Google OAuth or magic-link auth is required", () => {
   assertThrowsWithMessage(
     () => createHostedRuntime({
       env: {
         VIBBIT_GOOGLE_CLIENT_ID: "",
-        VIBBIT_GOOGLE_CLIENT_SECRET: ""
+        VIBBIT_GOOGLE_CLIENT_SECRET: "",
+        VIBBIT_MAGIC_LINK_ENABLED: "false",
+        VIBBIT_RESEND_API_KEY: "",
+        VIBBIT_MAGIC_LINK_DEV_CAPTURE: "false"
       }
     }),
-    "Hosted mode requires VIBBIT_GOOGLE_CLIENT_ID and VIBBIT_GOOGLE_CLIENT_SECRET"
+    "Hosted mode requires Google OAuth or configured magic-link email sign-in"
   );
 });
 

@@ -11,6 +11,8 @@ import {
   normaliseCredentialProvider,
   providerDisplayName
 } from "./provider-registry.mjs";
+import { createMagicLinkAuth } from "./magic-link-auth.mjs";
+import { resolveTrustedClientIp } from "./deployment-policy.mjs";
 
 const TEACHER_SESSION_COOKIE = "vibbit_teacher_session";
 const OAUTH_STATE_COOKIE = "vibbit_oauth_state";
@@ -97,6 +99,22 @@ function clearCookie(name, { secure = false, path = "/" } = {}) {
 
 function createSessionToken() {
   return "vtt_" + bytesToBase64Url(randomBytes(24));
+}
+
+function createCsrfToken() {
+  return "csrf_" + bytesToBase64Url(randomBytes(18));
+}
+
+const TEACHER_SECURITY_HEADERS = {
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+};
+
+function csrfHiddenInput(csrfToken) {
+  return `<input type="hidden" name="csrfToken" value="${escapeHtml(csrfToken)}">`;
 }
 
 function createTeacherSessionStore(ttlMs = TEACHER_SESSION_TTL_MS) {
@@ -405,10 +423,34 @@ async function testCredentialProfileConnection(profile) {
   }), 12000);
 }
 
-function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = "", error = "" }) {
+function renderLoginPage({
+  googleEnabled,
+  allowDevLogin,
+  magicLinkEnabled,
+  publicOrigin,
+  notice = "",
+  error = ""
+}) {
   const googleBlock = googleEnabled
     ? `<p><a class="btn" href="/teacher/auth/google">Continue with Google</a></p>`
-    : `<p class="hint">Google sign-in is not configured on this server. Set <code>VIBBIT_GOOGLE_CLIENT_ID</code> and <code>VIBBIT_GOOGLE_CLIENT_SECRET</code> to enable it (required for hosted mode).</p>`;
+    : `<p class="hint">Google sign-in is not configured. Set <code>VIBBIT_GOOGLE_CLIENT_ID</code> and <code>VIBBIT_GOOGLE_CLIENT_SECRET</code> to enable it.</p>`;
+
+  const magicBlock = magicLinkEnabled
+    ? `
+      <div class="panel">
+        <h2>Email magic link</h2>
+        <p class="hint">We will email a one-time sign-in link. The response is the same whether or not the account exists.</p>
+        <form method="post" action="/teacher/auth/magic">
+          <label>Email
+            <input type="email" name="email" required placeholder="teacher@school.edu" autocomplete="username" />
+          </label>
+          <div class="actions row">
+            <button type="submit">Email me a sign-in link</button>
+          </div>
+        </form>
+      </div>
+    `
+    : "";
 
   const devBlock = allowDevLogin
     ? `
@@ -441,13 +483,13 @@ function renderLoginPage({ googleEnabled, allowDevLogin, publicOrigin, notice = 
     <div class="panel">
       <h2>Sign in</h2>
       ${googleBlock}
-      <p class="hint">Students only need this server URL (<code>${escapeHtml(publicOrigin)}</code>) and your classroom code.</p>
+      <p class="hint">Students only need this server URL (<code>${escapeHtml(publicOrigin)}</code>) and your classroom code — or open <code>/join/CODE</code>.</p>
     </div>
+    ${magicBlock}
     ${devBlock}
     <div class="panel">
-      <h2>Compatible endpoints</h2>
-      <p class="hint">Any OpenAI-style <code>/v1/chat/completions</code> endpoint works — OpenAI, OpenRouter, Claude-compatible proxies, or <strong>LiteLLM</strong>.</p>
-      <p class="hint">Examples: <code>https://api.openai.com/v1</code>, <code>https://openrouter.ai/api/v1</code>, <code>http://localhost:4000/v1</code></p>
+      <h2>Compatible providers</h2>
+      <p class="hint">Choose OpenAI, OpenRouter, Gemini, or an advanced custom OpenAI-compatible URL (including LiteLLM).</p>
     </div>
   `;
 
@@ -459,6 +501,7 @@ function renderDashboardPage({
   classrooms,
   credentialProfiles,
   publicOrigin,
+  csrfToken,
   notice = "",
   error = ""
 }) {
@@ -483,6 +526,7 @@ function renderDashboardPage({
             : ""}
         </div>
         <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}" data-profile-form>
+          ${csrfHiddenInput(csrfToken)}
           <label>Profile name
             <input type="text" name="name" value="${escapeHtml(profile.name)}" maxlength="120" required />
           </label>
@@ -513,7 +557,8 @@ function renderDashboardPage({
             <button type="submit" class="secondary" formaction="/teacher/profiles/${escapeHtml(profile.id)}/test">Test key</button>
           </div>
         </form>
-        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}/delete" class="actions" onsubmit="return confirm('Delete this credential profile?');">
+        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}/delete" class="actions">
+          ${csrfHiddenInput(csrfToken)}
           <button type="submit" class="danger">Delete profile</button>
         </form>
       </div>
@@ -524,7 +569,8 @@ function renderDashboardPage({
       <div class="panel">
         <div class="classroom-meta">
           <strong>${escapeHtml(classroom.name)}</strong>
-          <div>Classroom code: <span class="code code-lg">${escapeHtml(classroom.code)}</span></div>
+          <div>Classroom code: <span class="code code-lg">${escapeHtml(classroom.code)}</span> · <a href="/join/${escapeHtml(classroom.code)}">Project code</a></div>
+          <div class="hint">Join link: <code>${escapeHtml(publicOrigin)}/join/${escapeHtml(classroom.code)}</code></div>
           <div class="hint">Students enter URL <code>${escapeHtml(publicOrigin)}</code> + this code in Vibbit Managed mode.</div>
           <div class="hint">Credential profile: <code>${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}</code>${classroom.usingTeacherDefault ? " (teacher default)" : ""} · Provider: <code>${escapeHtml(classroom.resolvedProviderLabel || "Not set")}</code> · Model: <code>${escapeHtml(classroom.resolvedModel || "Not set")}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
           ${classroom.resolvedCustomBaseUrl
@@ -535,6 +581,7 @@ function renderDashboardPage({
             : ""}
         </div>
         <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}">
+          ${csrfHiddenInput(csrfToken)}
           <label>Classroom name
             <input type="text" name="name" value="${escapeHtml(classroom.name)}" maxlength="120" required />
           </label>
@@ -559,9 +606,11 @@ function renderDashboardPage({
           </div>
         </form>
         <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/rotate" class="actions">
+          ${csrfHiddenInput(csrfToken)}
           <button type="submit" class="secondary">Mint new code</button>
         </form>
-        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/delete" class="actions" onsubmit="return confirm('Delete this classroom code?');">
+        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/delete" class="actions">
+          ${csrfHiddenInput(csrfToken)}
           <button type="submit" class="danger">Delete classroom</button>
         </form>
       </div>
@@ -576,7 +625,7 @@ function renderDashboardPage({
       </div>
       <div class="row">
         <a class="btn secondary" href="/">Home</a>
-        <form method="post" action="/teacher/logout"><button type="submit" class="secondary">Sign out</button></form>
+        <form method="post" action="/teacher/logout">${csrfHiddenInput(csrfToken)}<button type="submit" class="secondary">Sign out</button></form>
       </div>
     </div>
 
@@ -593,6 +642,7 @@ function renderDashboardPage({
     <div class="panel">
       <h2>Create a credential profile</h2>
       <form method="post" action="/teacher/profiles" data-profile-form>
+        ${csrfHiddenInput(csrfToken)}
         <label>Profile name
           <input type="text" name="name" value="School default" maxlength="120" required />
         </label>
@@ -609,7 +659,7 @@ function renderDashboardPage({
         </label>
         <details data-advanced-details>
           <summary>Advanced</summary>
-          <label data-custom-base-url-row style="display:none;">
+          <label data-custom-base-url-row>
             Custom base URL
             <input type="url" name="customBaseUrl" value="" placeholder="https://your-gateway.example/v1" />
           </label>
@@ -633,6 +683,7 @@ function renderDashboardPage({
       ${canMintClassroom
         ? `
           <form method="post" action="/teacher/classrooms">
+            ${csrfHiddenInput(csrfToken)}
             <label>Classroom name
               <input type="text" name="name" value="My class" maxlength="120" required />
             </label>
@@ -652,24 +703,6 @@ function renderDashboardPage({
         : `<p>Create a credential profile first, then mint classrooms that use it.</p>`}
     </div>
 
-    <script>
-      (function () {
-        for (const form of document.querySelectorAll("[data-profile-form]")) {
-          const select = form.querySelector("[data-provider-select]");
-          const details = form.querySelector("[data-advanced-details]");
-          const customRow = form.querySelector("[data-custom-base-url-row]");
-          const sync = function () {
-            const isCustom = !!select && select.value === "custom";
-            if (customRow) customRow.style.display = isCustom ? "grid" : "none";
-            if (details && isCustom) details.open = true;
-          };
-          if (select) {
-            select.addEventListener("change", sync);
-            sync();
-          }
-        }
-      }());
-    </script>
   `;
 
   return teacherShell({ title: "Teacher portal", body, notice, error });
@@ -692,6 +725,7 @@ async function readFormBody(request) {
 function redirectResponse(location, { cookies = [], origin = "", corsHeaders = {} } = {}) {
   const headers = new Headers({
     Location: location,
+    ...TEACHER_SECURITY_HEADERS,
     ...corsHeaders
   });
   for (const cookie of cookies) {
@@ -703,6 +737,7 @@ function redirectResponse(location, { cookies = [], origin = "", corsHeaders = {
 function htmlResponse(status, html, { cookies = [], corsHeaders = {} } = {}) {
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
+    ...TEACHER_SECURITY_HEADERS,
     ...corsHeaders
   });
   for (const cookie of cookies) {
@@ -721,6 +756,7 @@ export function createTeacherPortal({
   usageStore = null
 } = {}) {
   const google = resolveGoogleConfig(env, deploymentPolicy);
+  const magicLink = createMagicLinkAuth(env);
   const store = createTeacherPortalStore(sanitiseTeacherPortalState(initialState), {
     persist: persistState
   });
@@ -768,16 +804,48 @@ export function createTeacherPortal({
     return String(requestUrl.protocol || "").startsWith("https");
   };
 
-  const getTeacherFromRequest = (request) => {
+  const getSessionFromRequest = (request) => {
     const cookies = parseCookies(request.headers.get("cookie"));
     const token = cookies[TEACHER_SESSION_COOKIE];
-    const session = sessions.get(token);
+    if (!token) return null;
+    return sessions.get(token);
+  };
+
+  const getTeacherFromRequest = (request) => {
+    const session = getSessionFromRequest(request);
     if (!session || !session.meta || !session.meta.teacherId) return null;
     return store.getTeacher(session.meta.teacherId);
   };
 
+  const requireAuthenticatedMutation = async (request, corsHeaders) => {
+    const session = getSessionFromRequest(request);
+    if (!session || !session.meta || !session.meta.teacherId) {
+      return {
+        error: redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders })
+      };
+    }
+    const teacher = store.getTeacher(session.meta.teacherId);
+    if (!teacher) {
+      return {
+        error: redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders })
+      };
+    }
+    const body = await readFormBody(request);
+    const submitted = String(body.csrfToken || "").trim();
+    const expected = String(session.meta.csrfToken || "").trim();
+    if (!submitted || submitted !== expected) {
+      return {
+        error: redirectResponse("/teacher?error=Invalid%20session%20token", { corsHeaders })
+      };
+    }
+    return { session, teacher, body };
+  };
+
   const startTeacherSession = (teacher, requestUrl) => {
-    const session = sessions.create({ teacherId: teacher.id });
+    const session = sessions.create({
+      teacherId: teacher.id,
+      csrfToken: createCsrfToken()
+    });
     const secure = isSecureRequest(requestUrl);
     return serializeCookie(TEACHER_SESSION_COOKIE, session.token, {
       maxAgeSeconds: Math.floor(TEACHER_SESSION_TTL_MS / 1000),
@@ -808,11 +876,15 @@ export function createTeacherPortal({
     const error = String(requestUrl.searchParams.get("error") || "").trim();
 
     if (pathname === "/teacher" && request.method === "GET") {
-      const teacher = getTeacherFromRequest(request);
+      const session = getSessionFromRequest(request);
+      const teacher = session && session.meta && session.meta.teacherId
+        ? store.getTeacher(session.meta.teacherId)
+        : null;
       if (!teacher) {
         const html = renderLoginPage({
           googleEnabled: google.enabled,
           allowDevLogin: google.allowDevLogin,
+          magicLinkEnabled: magicLink.enabled,
           publicOrigin,
           notice,
           error
@@ -843,6 +915,7 @@ export function createTeacherPortal({
         classrooms,
         credentialProfiles,
         publicOrigin,
+        csrfToken: session.meta.csrfToken,
         notice,
         error
       });
@@ -897,6 +970,9 @@ export function createTeacherPortal({
         const accessToken = String(tokenPayload.access_token || "").trim();
         if (!accessToken) throw new Error("Missing Google access token");
         const profile = await fetchGoogleUserInfo(accessToken);
+        if (profile.email_verified === false) {
+          throw new Error("Google account email is not verified");
+        }
         const email = String(profile.email || "").trim().toLowerCase();
         const subject = String(profile.sub || email).trim();
         if (!email || !subject) throw new Error("Google account did not return an email");
@@ -926,6 +1002,45 @@ export function createTeacherPortal({
       }
     }
 
+    if (pathname === "/teacher/auth/magic" && request.method === "POST") {
+      if (!magicLink.enabled) {
+        return redirectResponse("/teacher?error=Magic%20link%20sign-in%20is%20not%20configured", { corsHeaders });
+      }
+      const body = await readFormBody(request);
+      const clientIp = resolveTrustedClientIp(request, deploymentPolicy || { trustProxy: false }) || "local";
+      await magicLink.requestLink({
+        email: body.email,
+        publicOrigin,
+        clientIp
+      });
+      return redirectResponse(
+        `/teacher?notice=${encodeURIComponent("If that email can sign in, a magic link has been sent.")}`,
+        { corsHeaders }
+      );
+    }
+
+    if (pathname === "/teacher/auth/magic/callback" && request.method === "GET") {
+      if (!magicLink.enabled) {
+        return redirectResponse("/teacher?error=Magic%20link%20sign-in%20is%20not%20configured", { corsHeaders });
+      }
+      const token = String(requestUrl.searchParams.get("token") || "").trim();
+      const consumed = magicLink.consumeToken(token);
+      if (!consumed || !consumed.email) {
+        return redirectResponse("/teacher?error=Magic%20link%20is%20invalid%20or%20expired", { corsHeaders });
+      }
+      const teacher = await store.upsertTeacher({
+        id: createTeacherId("magic", consumed.email),
+        email: consumed.email,
+        name: consumed.email.split("@")[0],
+        provider: "magic"
+      });
+      const sessionCookie = startTeacherSession(teacher, requestUrl);
+      return redirectResponse("/teacher?notice=Signed%20in%20with%20email", {
+        cookies: [sessionCookie],
+        corsHeaders
+      });
+    }
+
     if (pathname === "/teacher/dev-login" && request.method === "POST") {
       if (!google.allowDevLogin) {
         return redirectResponse("/teacher?error=Local%20teacher%20login%20is%20disabled", { corsHeaders });
@@ -953,6 +1068,8 @@ export function createTeacherPortal({
     }
 
     if (pathname === "/teacher/logout" && request.method === "POST") {
+      const auth = await requireAuthenticatedMutation(request, corsHeaders);
+      if (auth.error) return auth.error;
       const cookies = parseCookies(request.headers.get("cookie"));
       sessions.destroy(cookies[TEACHER_SESSION_COOKIE]);
       return redirectResponse("/teacher?notice=Signed%20out", {
@@ -962,10 +1079,10 @@ export function createTeacherPortal({
     }
 
     if (pathname === "/teacher/profiles" && request.method === "POST") {
-      const teacher = getTeacherFromRequest(request);
-      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      const auth = await requireAuthenticatedMutation(request, corsHeaders);
+      if (auth.error) return auth.error;
+      const { teacher, body } = auth;
       try {
-        const body = await readFormBody(request);
         const profileInput = await buildProfileInput(body);
         await store.createCredentialProfile(teacher.id, profileInput);
         return redirectResponse("/teacher?notice=Credential%20profile%20created", { corsHeaders });
@@ -977,8 +1094,9 @@ export function createTeacherPortal({
 
     const profileMatch = pathname.match(/^\/teacher\/profiles\/([^/]+)(?:\/(delete|test))?$/);
     if (profileMatch && request.method === "POST") {
-      const teacher = getTeacherFromRequest(request);
-      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      const auth = await requireAuthenticatedMutation(request, corsHeaders);
+      if (auth.error) return auth.error;
+      const { teacher, body } = auth;
       const profileId = decodeURIComponent(profileMatch[1]);
       const action = profileMatch[2] || "update";
       try {
@@ -990,7 +1108,6 @@ export function createTeacherPortal({
         if (!existingProfile || existingProfile.teacherId !== teacher.id) {
           throw new Error("Credential profile not found");
         }
-        const body = await readFormBody(request);
         const profileInput = await buildProfileInput(body, existingProfile);
         if (action === "test") {
           const draftProfile = {
@@ -1024,10 +1141,10 @@ export function createTeacherPortal({
     }
 
     if (pathname === "/teacher/classrooms" && request.method === "POST") {
-      const teacher = getTeacherFromRequest(request);
-      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      const auth = await requireAuthenticatedMutation(request, corsHeaders);
+      if (auth.error) return auth.error;
+      const { teacher, body } = auth;
       try {
-        const body = await readFormBody(request);
         await store.createClassroom(teacher.id, {
           name: body.name,
           credentialProfileId: body.credentialProfileId,
@@ -1042,8 +1159,9 @@ export function createTeacherPortal({
 
     const classroomMatch = pathname.match(/^\/teacher\/classrooms\/([^/]+)(?:\/(rotate|delete))?$/);
     if (classroomMatch && request.method === "POST") {
-      const teacher = getTeacherFromRequest(request);
-      if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
+      const auth = await requireAuthenticatedMutation(request, corsHeaders);
+      if (auth.error) return auth.error;
+      const { teacher, body } = auth;
       const classroomId = decodeURIComponent(classroomMatch[1]);
       const action = classroomMatch[2] || "update";
       try {
@@ -1055,7 +1173,6 @@ export function createTeacherPortal({
           await store.deleteClassroom(teacher.id, classroomId);
           return redirectResponse("/teacher?notice=Classroom%20deleted", { corsHeaders });
         }
-        const body = await readFormBody(request);
         await store.updateClassroom(teacher.id, classroomId, {
           name: body.name,
           credentialProfileId: body.credentialProfileId,

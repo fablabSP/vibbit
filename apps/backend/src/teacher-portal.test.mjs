@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createBackendRuntime } from "./runtime.mjs";
 import { normaliseApiBaseUrl } from "./classroom-store.mjs";
+import { followTeacherForm } from "./teacher-test-helpers.mjs";
 
 function createClassroomRuntime(teacherPortalState = {}) {
   let savedPortalState = teacherPortalState;
@@ -21,26 +22,6 @@ function createClassroomRuntime(teacherPortalState = {}) {
     },
     dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
   });
-}
-
-async function followTeacherForm(runtime, path, body, cookie = "") {
-  const response = await runtime.fetch(new Request(`https://example.test${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      ...(cookie ? { Cookie: cookie } : {})
-    },
-    body: new URLSearchParams(body).toString(),
-    redirect: "manual"
-  }));
-  const setCookie = typeof response.headers.getSetCookie === "function"
-    ? response.headers.getSetCookie()
-    : [];
-  const cookieHeader = setCookie
-    .map((item) => String(item).split(";")[0])
-    .filter(Boolean)
-    .join("; ");
-  return { response, cookieHeader };
 }
 
 test("normaliseApiBaseUrl adds /v1 for OpenAI-compatible and LiteLLM roots", () => {
