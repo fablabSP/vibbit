@@ -1495,7 +1495,13 @@ export function createBackendRuntime(options = {}) {
       : "";
     if (!classroomId) return getEffectiveProviderConfig();
     const classroom = teacherPortal.store.getClassroom(classroomId);
-    if (!classroom || !classroom.enabled) {
+    const sessionVersion = Number(session && session.meta && session.meta.sessionVersion);
+    if (
+      !classroom
+      || !classroom.enabled
+      || !Number.isFinite(sessionVersion)
+      || sessionVersion !== classroom.sessionVersion
+    ) {
       throw Object.assign(new Error("Classroom session is no longer valid"), { statusCode: 401 });
     }
     if (!classroom.apiKey) {
@@ -1509,6 +1515,7 @@ export function createBackendRuntime(options = {}) {
     const body = await readJson(request, 16 * 1024);
     const providedCode = body && (body.classCode || body.code);
     let classroomId = "";
+    let sessionMeta = null;
     let publicProviderConfig = getEffectiveProviderConfig();
 
     if (authMode === "app-token") {
@@ -1531,12 +1538,17 @@ export function createBackendRuntime(options = {}) {
           runtimeConfig,
           providerConfigFromClassroom(teacherClassroom)
         );
+        sessionMeta = {
+          student: String((body && body.student) || "").trim().slice(0, 120),
+          classroomId,
+          sessionVersion: teacherClassroom.sessionVersion
+        };
       } else if (!isClassroomCodeValid(candidateCode, runtimeConfig)) {
         return respondJson(401, { error: "Invalid class code" }, origin, runtimeConfig);
       }
     }
 
-    const session = sessionStore.createSession({
+    const session = sessionStore.createSession(sessionMeta || {
       student: String((body && body.student) || "").trim().slice(0, 120),
       classroomId
     });
@@ -1740,6 +1752,15 @@ export function createBackendRuntime(options = {}) {
         }
 
         const session = getRequestSession(request, sessionStore);
+        const classroomId = session && session.meta && session.meta.classroomId
+          ? String(session.meta.classroomId)
+          : "";
+        if (classroomId && (validated.value.provider || validated.value.model)) {
+          return respondJson(400, {
+            error: "Classroom sessions cannot override provider or model."
+          }, origin, runtimeConfig);
+        }
+
         const providerConfig = resolveProviderConfigForSession(session);
         const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
         return respondJson(200, result, origin, runtimeConfig);

@@ -90,8 +90,27 @@ export function normaliseApiBaseUrl(value) {
 export function createEmptyTeacherPortalState() {
   return {
     teachers: {},
-    classrooms: {}
+    classrooms: {},
+    retiredClassCodes: {}
   };
+}
+
+function parseSessionVersion(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(parsed));
+}
+
+function sanitiseRetiredClassCodes(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const retired = {};
+  for (const [rawCode, rawAt] of Object.entries(source)) {
+    const code = normaliseClassCode(rawCode);
+    if (!code) continue;
+    const retiredAt = String(rawAt || "").trim() || new Date().toISOString();
+    retired[code] = retiredAt;
+  }
+  return retired;
 }
 
 function sanitiseTeacher(input) {
@@ -126,6 +145,7 @@ function sanitiseClassroom(input) {
     apiKey,
     model: String(source.model || DEFAULT_MODEL).trim().slice(0, 160) || DEFAULT_MODEL,
     enabled: source.enabled !== false,
+    sessionVersion: parseSessionVersion(source.sessionVersion),
     createdAt: String(source.createdAt || "").trim() || new Date().toISOString(),
     updatedAt: String(source.updatedAt || "").trim() || new Date().toISOString()
   };
@@ -153,7 +173,11 @@ export function sanitiseTeacherPortalState(input) {
     }
   }
 
-  return { teachers, classrooms };
+  return {
+    teachers,
+    classrooms,
+    retiredClassCodes: sanitiseRetiredClassCodes(source.retiredClassCodes)
+  };
 }
 
 export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
@@ -205,9 +229,15 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
 
   const getClassroom = (classroomId) => state.classrooms[String(classroomId || "").trim()] || null;
 
+  const isCodeRetired = (code) => {
+    const normalised = normaliseClassCode(code);
+    return Boolean(normalised && state.retiredClassCodes[normalised]);
+  };
+
   const isCodeTaken = (code, exceptClassroomId = "") => {
     const normalised = normaliseClassCode(code);
     if (!normalised) return false;
+    if (isCodeRetired(normalised)) return true;
     return Object.values(state.classrooms).some((classroom) => (
       classroom.code === normalised && classroom.id !== exceptClassroomId
     ));
@@ -219,6 +249,15 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       if (!isCodeTaken(code, exceptClassroomId)) return code;
     }
     throw new Error("Unable to mint a unique classroom code");
+  };
+
+  const retireCode = (code, retiredAt = new Date().toISOString()) => {
+    const normalised = normaliseClassCode(code);
+    if (!normalised) return state.retiredClassCodes;
+    return {
+      ...state.retiredClassCodes,
+      [normalised]: retiredAt
+    };
   };
 
   const createClassroom = async (teacherId, input = {}) => {
@@ -238,6 +277,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       apiKey: input.apiKey || "",
       model: input.model || DEFAULT_MODEL,
       enabled: input.enabled !== false,
+      sessionVersion: 1,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -264,6 +304,25 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     if (!nextCode) throw new Error("Classroom code is required");
     if (isCodeTaken(nextCode, existing.id)) throw new Error("Classroom code already in use");
 
+    const nextEnabled = input.enabled != null
+      ? (input.enabled !== false && input.enabled !== "false")
+      : existing.enabled;
+    const codeChanged = nextCode !== existing.code;
+    const becomingDisabled = existing.enabled && !nextEnabled;
+    let nextVersion = existing.sessionVersion;
+    let nextRetired = state.retiredClassCodes;
+
+    if (codeChanged) {
+      nextRetired = retireCode(existing.code);
+      nextVersion += 1;
+    } else if (becomingDisabled) {
+      nextVersion += 1;
+    }
+
+    if (input.bumpSessionVersion === true) {
+      nextVersion += 1;
+    }
+
     const classroom = sanitiseClassroom({
       ...existing,
       name: input.name != null ? input.name : existing.name,
@@ -273,12 +332,14 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
         ? input.apiKey
         : existing.apiKey,
       model: input.model != null ? input.model : existing.model,
-      enabled: input.enabled != null ? input.enabled !== false && input.enabled !== "false" : existing.enabled,
+      enabled: nextEnabled,
+      sessionVersion: nextVersion,
       updatedAt: new Date().toISOString()
     });
 
     state = {
       ...state,
+      retiredClassCodes: nextRetired,
       classrooms: {
         ...state.classrooms,
         [classroom.id]: classroom
@@ -294,6 +355,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       throw new Error("Classroom not found");
     }
     const code = mintUniqueCode(existing.id);
+    // One atomic save: retire old code, assign new code, bump sessionVersion.
     return updateClassroom(teacherId, classroomId, { code });
   };
 
@@ -304,7 +366,11 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     }
     const nextClassrooms = { ...state.classrooms };
     delete nextClassrooms[existing.id];
-    state = { ...state, classrooms: nextClassrooms };
+    state = {
+      ...state,
+      retiredClassCodes: retireCode(existing.code),
+      classrooms: nextClassrooms
+    };
     await save();
     return true;
   };

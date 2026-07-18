@@ -158,7 +158,7 @@ test("baseline: legacy VIBBIT_CLASSROOM_CODE still connects when teacher classro
   assert.ok(body.sessionToken);
 });
 
-test("baseline: student model override in generate payload reaches mocked upstream body", async () => {
+test("P1-03: classroom sessions reject student model overrides before upstream", async () => {
   const { runtime } = createBaselineRuntime({
     teacherPortalState: seededTeacherClassroom
   });
@@ -167,14 +167,9 @@ test("baseline: student model override in generate payload reaches mocked upstre
   const connected = await connect.json();
   assert.equal(connect.status, 200);
 
-  let seenModel = "";
-  const restoreFetch = mockUpstreamFetch(async (_url, init = {}) => {
-    try {
-      const parsed = JSON.parse(String(init.body || "{}"));
-      seenModel = parsed.model || "";
-    } catch {
-      seenModel = "";
-    }
+  let upstreamCalled = false;
+  const restoreFetch = mockUpstreamFetch(async () => {
+    upstreamCalled = true;
     return mockGenerateResponse();
   });
 
@@ -191,14 +186,16 @@ test("baseline: student model override in generate payload reaches mocked upstre
         model: "gpt-4o-override"
       })
     }));
-    assert.equal(generate.status, 200);
-    assert.equal(seenModel, "gpt-4o-override");
+    assert.equal(generate.status, 400);
+    const body = await generate.json();
+    assert.match(String(body.error || ""), /cannot override/i);
+    assert.equal(upstreamCalled, false);
   } finally {
     restoreFetch();
   }
 });
 
-test("baseline: rotated classroom code does not invalidate an existing student session", async () => {
+test("P1-03: rotated classroom code invalidates an existing student session", async () => {
   const { runtime } = createBaselineRuntime({
     env: { VIBBIT_TEACHER_DEV_LOGIN: "true" },
     teacherPortalState: seededTeacherClassroom
@@ -225,11 +222,16 @@ test("baseline: rotated classroom code does not invalidate an existing student s
   const classroom = runtime.teacherPortal.store.getClassroom("cls_baseline");
   assert.ok(classroom);
   assert.notEqual(classroom.code, "BASE1");
+  assert.equal(classroom.sessionVersion, 2);
 
   const oldCodeConnect = await connectWithCode(runtime, "BASE1");
   assert.equal(oldCodeConnect.status, 401);
 
-  const restoreFetch = mockUpstreamFetch(async () => mockGenerateResponse());
+  let upstreamCalled = false;
+  const restoreFetch = mockUpstreamFetch(async () => {
+    upstreamCalled = true;
+    return mockGenerateResponse();
+  });
   try {
     const generate = await runtime.fetch(new Request("https://example.test/vibbit/generate", {
       method: "POST",
@@ -242,9 +244,11 @@ test("baseline: rotated classroom code does not invalidate an existing student s
         request: "Show a heart"
       })
     }));
-    assert.equal(generate.status, 200);
-    const result = await generate.json();
-    assert.match(String(result.code || ""), /showIcon/);
+    assert.equal(generate.status, 401);
+    assert.equal(upstreamCalled, false);
+
+    const reconnect = await connectWithCode(runtime, classroom.code);
+    assert.equal(reconnect.status, 200);
   } finally {
     restoreFetch();
   }
