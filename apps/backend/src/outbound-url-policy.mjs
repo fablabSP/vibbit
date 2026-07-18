@@ -59,7 +59,7 @@ function isBlockedIpv4(ip) {
     [0xe0000000, 0xf0000000], // 224.0.0.0/4 multicast
     [0xf0000000, 0xf0000000] // 240.0.0.0/4 reserved
   ];
-  return checks.some(([base, mask]) => (value & mask) === base);
+  return checks.some(([base, mask]) => ((value & mask) >>> 0) === base);
 }
 
 function isBlockedIpv6(ip) {
@@ -136,7 +136,7 @@ export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsL
       throw new Error(`${purpose} URL must use http or https`);
     }
 
-    const hostname = String(parsed.hostname || "").toLowerCase();
+    const hostname = String(parsed.hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
     if (!hostname) throw new Error(`${purpose} URL is missing a hostname`);
     if (BLOCKED_HOSTNAMES.has(hostname)) {
       throw new Error(`${purpose} URL host is not allowed`);
