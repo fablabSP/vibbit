@@ -56,10 +56,12 @@ function createHostedRuntime({
       VIBBIT_OPENAI_API_KEY: "server-fallback-key",
       VIBBIT_PROVIDER: "openai",
       VIBBIT_MODEL: "gpt-4o-mini",
+      VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST: "litellm.example",
       ...env
     },
     teacherPortalState,
-    persistTeacherPortalState: async () => {}
+    persistTeacherPortalState: async () => {},
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
   });
 }
 
@@ -189,9 +191,8 @@ test("hosted: allowed MakeCode origin is echoed in CORS on OPTIONS and /healthz"
   assert.equal(healthz.headers.get("Access-Control-Allow-Origin"), allowedOrigin);
 });
 
-test("hosted: disallowed origin falls back to first configured MakeCode origin", async () => {
+test("hosted: disallowed origin receives no Access-Control-Allow-Origin", async () => {
   const runtime = createHostedRuntime();
-  const fallbackOrigin = MAKECODE_DEFAULT_ORIGINS[0];
   const disallowedOrigin = "https://evil.makecode.test";
 
   const options = await runtime.fetch(new Request(`${HOSTED_PUBLIC_ORIGIN}/healthz`, {
@@ -199,14 +200,13 @@ test("hosted: disallowed origin falls back to first configured MakeCode origin",
     headers: { Origin: disallowedOrigin }
   }));
   assert.equal(options.status, 204);
-  assert.equal(options.headers.get("Access-Control-Allow-Origin"), fallbackOrigin);
-  assert.notEqual(options.headers.get("Access-Control-Allow-Origin"), disallowedOrigin);
+  assert.equal(options.headers.get("Access-Control-Allow-Origin"), null);
 
   const healthz = await runtime.fetch(new Request(`${HOSTED_PUBLIC_ORIGIN}/healthz`, {
     headers: { Origin: disallowedOrigin }
   }));
   assert.equal(healthz.status, 200);
-  assert.equal(healthz.headers.get("Access-Control-Allow-Origin"), fallbackOrigin);
+  assert.equal(healthz.headers.get("Access-Control-Allow-Origin"), null);
 });
 
 test("hosted: legacy VIBBIT_CLASSROOM_CODE cannot connect", async () => {

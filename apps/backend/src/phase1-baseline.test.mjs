@@ -24,7 +24,9 @@ function createBaselineRuntime({
       ...env
     },
     teacherPortalState,
-    persistTeacherPortalState: persist
+    persistTeacherPortalState: persist,
+    // Deterministic public DNS for custom classroom endpoints in tests.
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
   });
 
   return { runtime, persistedStates };

@@ -526,7 +526,8 @@ export function createTeacherPortal({
   initialState = {},
   persistState,
   respondCorsHeaders = () => ({}),
-  deploymentPolicy = null
+  deploymentPolicy = null,
+  outboundUrlPolicy = null
 } = {}) {
   const google = resolveGoogleConfig(env, deploymentPolicy);
   const store = createTeacherPortalStore(sanitiseTeacherPortalState(initialState), {
@@ -534,6 +535,17 @@ export function createTeacherPortal({
   });
   const sessions = createTeacherSessionStore();
   const oauthStates = new Map();
+
+  const validateEndpointUrl = async (apiBaseUrl) => {
+    if (!outboundUrlPolicy || typeof outboundUrlPolicy.assertSafeUrl !== "function") {
+      return normaliseApiBaseUrl(apiBaseUrl);
+    }
+    const normalised = normaliseApiBaseUrl(apiBaseUrl);
+    const safe = await outboundUrlPolicy.assertSafeUrl(normalised, {
+      purpose: "classroom API base URL"
+    });
+    return safe.href || normalised;
+  };
 
   const isSecureRequest = (requestUrl) => {
     if (deploymentPolicy && deploymentPolicy.publicOrigin) {
@@ -721,9 +733,10 @@ export function createTeacherPortal({
       if (!teacher) return redirectResponse("/teacher?error=Please%20sign%20in", { corsHeaders });
       try {
         const body = await readFormBody(request);
+        const apiBaseUrl = await validateEndpointUrl(body.apiBaseUrl);
         await store.createClassroom(teacher.id, {
           name: body.name,
-          apiBaseUrl: normaliseApiBaseUrl(body.apiBaseUrl),
+          apiBaseUrl,
           apiKey: body.apiKey,
           model: body.model
         });
@@ -750,9 +763,12 @@ export function createTeacherPortal({
           return redirectResponse("/teacher?notice=Classroom%20deleted", { corsHeaders });
         }
         const body = await readFormBody(request);
+        const apiBaseUrl = body.apiBaseUrl != null
+          ? await validateEndpointUrl(body.apiBaseUrl)
+          : undefined;
         await store.updateClassroom(teacher.id, classroomId, {
           name: body.name,
-          apiBaseUrl: body.apiBaseUrl,
+          apiBaseUrl,
           apiKey: body.apiKey,
           model: body.model,
           enabled: body.enabled != null

@@ -17,6 +17,7 @@ import {
   createDeploymentPolicy,
   resolveRequestPublicOrigin
 } from "./deployment-policy.mjs";
+import { createOutboundUrlPolicy } from "./outbound-url-policy.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
@@ -456,14 +457,7 @@ function buildCorsHeaders(origin, config) {
     .map((item) => item.replace(/\/+$/, ""))
     .filter(Boolean);
 
-  let allowOrigin = "*";
-  if (configuredOrigins.length && !configuredOrigins.includes("*")) {
-    if (requestOrigin && configuredOrigins.includes(requestOrigin)) allowOrigin = requestOrigin;
-    else allowOrigin = configuredOrigins[0];
-  }
-
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
+  const headers = {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": DEFAULT_CORS_HEADERS,
     // Required by Chromium private-network access preflights when the
@@ -471,6 +465,18 @@ function buildCorsHeaders(origin, config) {
     "Access-Control-Allow-Private-Network": "true",
     "Access-Control-Max-Age": "86400"
   };
+
+  if (!configuredOrigins.length || configuredOrigins.includes("*")) {
+    headers["Access-Control-Allow-Origin"] = "*";
+    return headers;
+  }
+
+  // Explicit allow-list: echo only matching origins; never fall back to another origin.
+  if (requestOrigin && configuredOrigins.includes(requestOrigin)) {
+    headers["Access-Control-Allow-Origin"] = requestOrigin;
+  }
+
+  return headers;
 }
 
 function respondJson(status, body, origin, config) {
@@ -1479,17 +1485,22 @@ export function createBackendRuntime(options = {}) {
     runtimeConfig.providerConfig.enabledProviders
   );
   const deployment = runtimeConfig.deployment;
+  const outboundUrlPolicy = options.outboundUrlPolicy
+    || createOutboundUrlPolicy(env, {
+      dnsLookup: typeof options.dnsLookup === "function" ? options.dnsLookup : undefined
+    });
   const teacherPortal = createTeacherPortal({
     env,
     initialState: options.teacherPortalState || {},
     persistState: persistTeacherPortalState,
     respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig),
-    deploymentPolicy: deployment
+    deploymentPolicy: deployment,
+    outboundUrlPolicy
   });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
   const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
 
-  const resolveProviderConfigForSession = (session) => {
+  const resolveProviderConfigForSession = async (session) => {
     const classroomId = session && session.meta && session.meta.classroomId
       ? String(session.meta.classroomId)
       : "";
@@ -1506,6 +1517,16 @@ export function createBackendRuntime(options = {}) {
     }
     if (!classroom.apiKey) {
       throw Object.assign(new Error("Classroom is missing an API key"), { statusCode: 503 });
+    }
+    try {
+      await outboundUrlPolicy.assertSafeUrl(classroom.apiBaseUrl, {
+        purpose: "classroom API base URL"
+      });
+    } catch (error) {
+      throw Object.assign(
+        new Error((error && error.message) || "Classroom endpoint is not allowed"),
+        { statusCode: 503 }
+      );
     }
     return providerConfigFromClassroom(classroom);
   };
@@ -1761,7 +1782,7 @@ export function createBackendRuntime(options = {}) {
           }, origin, runtimeConfig);
         }
 
-        const providerConfig = resolveProviderConfigForSession(session);
+        const providerConfig = await resolveProviderConfigForSession(session);
         const result = await generateManaged(validated.value, runtimeConfig, providerConfig);
         return respondJson(200, result, origin, runtimeConfig);
       } catch (error) {

@@ -18,7 +18,8 @@ function createClassroomRuntime(teacherPortalState = {}) {
     teacherPortalState,
     persistTeacherPortalState: async (next) => {
       savedPortalState = next;
-    }
+    },
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
   });
 }
 

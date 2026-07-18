@@ -37,12 +37,17 @@ export async function callOpenAICompatible({
   const response = await fetch(url, {
     method: "POST",
     signal,
+    redirect: "manual",
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer " + key
     },
     body: JSON.stringify(body)
   });
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("OpenAI-compatible endpoint returned a redirect, which is not allowed");
+  }
 
   if (!response.ok) {
     let detail = "";
