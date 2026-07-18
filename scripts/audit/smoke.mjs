@@ -72,11 +72,11 @@ async function runSmokeUi() {
         && runtime.includes("MICRO:BIT BLOCKS-TEST STYLE EXAMPLES"),
       "Runtime prompt keeps pxt-microbit icon/enum + blocks-test style guidance."
     );
-    const backendRuntime = await readFile(path.join(repoRoot, "apps", "backend", "src", "runtime.mjs"), "utf8");
+    const sharedCompatCore = await readFile(path.join(repoRoot, "shared", "makecode-compat-core.mjs"), "utf8");
     pushCheck(
       "03b Backend prompt micro:bit guardrails",
-      backendRuntime.includes("MICRO:BIT BUILT-IN ICON/ENUM RULES")
-        && backendRuntime.includes("MICRO:BIT BLOCKS-TEST STYLE EXAMPLES"),
+      sharedCompatCore.includes("MICRO:BIT BUILT-IN ICON/ENUM RULES")
+        && sharedCompatCore.includes("MICRO:BIT BLOCKS-TEST STYLE EXAMPLES"),
       "Backend prompt keeps pxt-microbit icon/enum + blocks-test style guidance."
     );
     await page.addScriptTag({ content: runtime });
@@ -103,84 +103,51 @@ async function runSmokeUi() {
 
     const setupDefault = await page.evaluate(() => {
       const mode = document.querySelector("#setup-mode");
+      const modeRow = document.querySelector("#setup-mode-row");
       const byokProvider = document.querySelector("#setup-byok-provider");
       const byokModel = document.querySelector("#setup-byok-model");
       const byokKey = document.querySelector("#setup-byok-key");
       const managedServer = document.querySelector("#setup-managed-server");
+      const managedServerUrl = document.querySelector("#setup-managed-server-url");
+      const classCode = document.querySelector("#setup-class-code");
       return {
         modeValue: mode ? mode.value : "",
-        byokProviderVisible: byokProvider ? getComputedStyle(byokProvider).display !== "none" : false,
-        byokModelVisible: byokModel ? getComputedStyle(byokModel).display !== "none" : false,
-        byokKeyVisible: byokKey ? getComputedStyle(byokKey).display !== "none" : false,
-        managedServerHidden: managedServer ? getComputedStyle(managedServer).display === "none" : false
-      };
-    });
-    pushCheck(
-      "05 Setup defaults",
-      setupDefault.modeValue === "byok"
-        && setupDefault.byokProviderVisible
-        && setupDefault.byokModelVisible
-        && setupDefault.byokKeyVisible
-        && setupDefault.managedServerHidden,
-      `mode=${setupDefault.modeValue}, byokProviderVisible=${setupDefault.byokProviderVisible}, byokModelVisible=${setupDefault.byokModelVisible}, byokKeyVisible=${setupDefault.byokKeyVisible}, managedServerHidden=${setupDefault.managedServerHidden}.`
-    );
-
-    await page.selectOption("#setup-mode", "managed");
-    await page.waitForTimeout(400);
-    const managedState = await page.evaluate(() => {
-      const mode = document.querySelector("#setup-mode");
-      const byokProvider = document.querySelector("#setup-byok-provider");
-      const byokModel = document.querySelector("#setup-byok-model");
-      const byokKey = document.querySelector("#setup-byok-key");
-      const managedServer = document.querySelector("#setup-managed-server");
-      return {
-        modeValue: mode ? mode.value : "",
+        modeRowHidden: modeRow ? getComputedStyle(modeRow).display === "none" : false,
         byokProviderHidden: byokProvider ? getComputedStyle(byokProvider).display === "none" : false,
         byokModelHidden: byokModel ? getComputedStyle(byokModel).display === "none" : false,
         byokKeyHidden: byokKey ? getComputedStyle(byokKey).display === "none" : false,
-        managedServerVisible: managedServer ? getComputedStyle(managedServer).display !== "none" : false
+        managedServerVisible: managedServer ? getComputedStyle(managedServer).display !== "none" : false,
+        serverUrlHidden: managedServerUrl ? getComputedStyle(managedServerUrl).display === "none" : false,
+        classCodeVisible: classCode ? getComputedStyle(classCode).display !== "none" : false
       };
     });
     await page.screenshot({ path: screenshots.managed, fullPage: false });
     pushCheck(
-      "06 Setup mode toggle (managed)",
-      managedState.modeValue === "managed"
-        && managedState.byokProviderHidden
-        && managedState.byokModelHidden
-        && managedState.byokKeyHidden
-        && managedState.managedServerVisible,
-      `mode=${managedState.modeValue}, byokProviderHidden=${managedState.byokProviderHidden}, byokModelHidden=${managedState.byokModelHidden}, byokKeyHidden=${managedState.byokKeyHidden}, managedServerVisible=${managedState.managedServerVisible}.`
+      "05 Hosted-managed setup defaults",
+      setupDefault.modeValue === "managed"
+        && setupDefault.byokProviderHidden
+        && setupDefault.byokModelHidden
+        && setupDefault.byokKeyHidden
+        && setupDefault.managedServerVisible
+        && setupDefault.serverUrlHidden
+        && setupDefault.classCodeVisible,
+      `mode=${setupDefault.modeValue}, modeRowHidden=${setupDefault.modeRowHidden}, byokHidden=${setupDefault.byokProviderHidden}, managedServerVisible=${setupDefault.managedServerVisible}, serverUrlHidden=${setupDefault.serverUrlHidden}, classCodeVisible=${setupDefault.classCodeVisible}.`
     );
 
-    await page.selectOption("#setup-mode", "byok");
-    await page.waitForTimeout(300);
-    const byokState = await page.evaluate(() => {
-      const mode = document.querySelector("#setup-mode");
-      const byokProvider = document.querySelector("#setup-byok-provider");
-      const byokModel = document.querySelector("#setup-byok-model");
-      const byokKey = document.querySelector("#setup-byok-key");
-      const managedServer = document.querySelector("#setup-managed-server");
-      return {
-        modeValue: mode ? mode.value : "",
-        byokProviderVisible: byokProvider ? getComputedStyle(byokProvider).display !== "none" : false,
-        byokModelVisible: byokModel ? getComputedStyle(byokModel).display !== "none" : false,
-        byokKeyVisible: byokKey ? getComputedStyle(byokKey).display !== "none" : false,
-        managedServerHidden: managedServer ? getComputedStyle(managedServer).display === "none" : false
-      };
-    });
+    pushCheck(
+      "06 Code-only classroom field",
+      setupDefault.serverUrlHidden && setupDefault.classCodeVisible,
+      `serverUrlHidden=${setupDefault.serverUrlHidden}, classCodeVisible=${setupDefault.classCodeVisible}.`
+    );
+
     await page.screenshot({ path: screenshots.byok, fullPage: false });
     pushCheck(
-      "07 Setup mode toggle (BYOK)",
-      byokState.modeValue === "byok"
-        && byokState.byokProviderVisible
-        && byokState.byokModelVisible
-        && byokState.byokKeyVisible
-        && byokState.managedServerHidden,
-      `mode=${byokState.modeValue}, byokProviderVisible=${byokState.byokProviderVisible}, byokModelVisible=${byokState.byokModelVisible}, byokKeyVisible=${byokState.byokKeyVisible}, managedServerHidden=${byokState.managedServerHidden}.`
+      "07 BYOK disabled in hosted-managed build",
+      setupDefault.byokProviderHidden && setupDefault.byokModelHidden && setupDefault.byokKeyHidden,
+      `byokProviderHidden=${setupDefault.byokProviderHidden}, byokModelHidden=${setupDefault.byokModelHidden}, byokKeyHidden=${setupDefault.byokKeyHidden}.`
     );
 
-    await page.selectOption("#setup-mode", "managed");
-    await page.fill("#setup-server", "vibbit.tk.sg");
+    await page.fill("#setup-class-code", "SMOKE");
     await page.click("#setup-go");
     await page.waitForSelector("#go", { timeout: 20000 });
 
@@ -212,6 +179,19 @@ async function runSmokeUi() {
             }
           }
         };
+        // Stable editor-mode tabs for clickLike during headless smoke runs.
+        for (const label of ["JavaScript", "Blocks"]) {
+          const existing = [...document.querySelectorAll("button,[role='tab']")]
+            .find((node) => ((node.textContent || "") + " " + (node.getAttribute("aria-label") || "")).includes(label));
+          if (existing) continue;
+          const tab = document.createElement("button");
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-label", label);
+          tab.textContent = label;
+          tab.style.position = "fixed";
+          tab.style.left = "-9999px";
+          document.body.appendChild(tab);
+        }
         window.__smokeMonacoStub = true;
       }
 
@@ -221,6 +201,16 @@ async function runSmokeUi() {
         window.__smokeByokCalls = 0;
         window.fetch = (input, init) => {
           const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+          if (url.includes("/vibbit/connect")) {
+            return Promise.resolve(new Response(JSON.stringify({
+              ok: true,
+              sessionToken: "smoke-session-token",
+              expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            }));
+          }
           if (url.includes("/vibbit/generate")) {
             window.__smokeManagedCalls += 1;
             return Promise.resolve(new Response(JSON.stringify({
@@ -300,20 +290,16 @@ async function runSmokeUi() {
       `status='${managedGenerationState.status}', pastedCodeIncludesExpected=${managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")}, feedbackVisible=${managedGenerationState.feedbackVisible}, feedbackLines=${managedGenerationState.feedbackLines.join(" || ")}.`
     );
 
-    await page.evaluate(() => {
-      localStorage.setItem("__vibbit_mode", "byok");
-      localStorage.setItem("__vibbit_provider", "openai");
-      localStorage.setItem("__vibbit_model", "gpt-5.2");
-      localStorage.setItem("__vibbit_key_openai", "smoke-dummy-key");
-    });
-    await page.fill("#p", "Create a tiny byok program");
+    // Hosted-managed builds disable BYOK; keep a second managed generate as the
+    // regression cover for parser/feedback behaviour that used to live in BYOK.
+    await page.fill("#p", "Create another tiny managed program");
     await page.click("#go");
     await page.waitForFunction(() => {
       const status = document.querySelector("#status")?.textContent?.trim() || "";
       return status === "Done" || status === "Error";
     }, { timeout: 30000 });
 
-    const byokGenerationState = await page.evaluate(() => {
+    const secondManagedState = await page.evaluate(() => {
       const status = document.querySelector("#status")?.textContent?.trim() || "";
       const logText = document.querySelector("#log")?.textContent || "";
       const pastedCode = window.__smokeMonacoValue || "";
@@ -329,16 +315,16 @@ async function runSmokeUi() {
     await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
 
     pushCheck(
-      "10 BYOK mocked generation + parser guard + feedback fallback",
-      byokGenerationState.status === "Done"
-        && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
-        && byokGenerationState.feedbackVisible
-        && byokGenerationState.feedbackLines.includes("Model completed generation without explicit feedback notes.")
-        && byokGenerationState.byokCalls >= 1,
-      `status='${byokGenerationState.status}', pastedCodeIncludesExpected=${byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")}, feedbackVisible=${byokGenerationState.feedbackVisible}, feedbackLines=${byokGenerationState.feedbackLines.join(" || ")}, byokCalls=${byokGenerationState.byokCalls}, managedCalls=${byokGenerationState.managedCalls}.`
+      "10 Second managed generate + BYOK remains unused",
+      secondManagedState.status === "Done"
+        && secondManagedState.pastedCode.includes("basic.showString(\"Managed\")")
+        && secondManagedState.feedbackVisible
+        && secondManagedState.managedCalls >= 2
+        && secondManagedState.byokCalls === 0,
+      `status='${secondManagedState.status}', pastedCodeIncludesExpected=${secondManagedState.pastedCode.includes("basic.showString(\"Managed\")")}, feedbackVisible=${secondManagedState.feedbackVisible}, byokCalls=${secondManagedState.byokCalls}, managedCalls=${secondManagedState.managedCalls}.`
     );
 
-    const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(byokGenerationState.logText);
+    const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(secondManagedState.logText);
     pushCheck(
       "11 Decompile probe log",
       hasProbeLog,

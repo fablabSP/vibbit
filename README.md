@@ -9,10 +9,8 @@ This repo ships one Vibbit runtime supporting both:
 
 1. Teacher runs or deploys the backend (`apps/backend/`).
 2. Teacher opens `/teacher`, signs in (Google or local/dev login), and saves an OpenAI-compatible API base URL + key.
-3. Teacher mints a classroom code and shares only:
-   - server URL
-   - classroom code
-4. Students open Vibbit in MakeCode, choose `Managed`, and enter URL + class code.
+3. Teacher mints a classroom code and shares the 5-letter code (and optionally `/join/CODE`).
+4. Students open Vibbit in MakeCode and enter the classroom code (the shipped extension bakes `https://vibbit.tk.sg` and hides the server URL).
 5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
 6. Provider keys stay on the server (per classroom). Optional operator panel: `/admin?admin=<ADMINTOKEN>`.
 
@@ -174,7 +172,7 @@ Default local URL:
 
 - `http://localhost:8787`
 
-On start, backend logs the classroom share line (URL + class code) and the admin URL (`/admin?admin=...`).
+On start, backend logs the classroom share line (classroom code; hosted students need only the code) and the admin URL (`/admin?admin=...`).
 
 If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and configure them in the Provider Setup form.
 
@@ -197,7 +195,7 @@ Recommended teacher flow:
 1. Open [Railway New Project](https://railway.com/new) and deploy from GitHub.
 2. Set service root directory to `apps/backend`.
 3. Add required env vars from `apps/backend/.env.example`.
-4. Generate a public domain and share URL + class code.
+4. Generate a public domain, mint a classroom code, and share the code (hosted extension students need only the code).
 
 Cheapest hosted option:
 
@@ -228,12 +226,12 @@ Then:
    - `dist/content-script.js`
    - `dist/manifest.json`
    - `artifacts/vibbit-extension.zip`
-3. Managed checks:
-   - enter server URL + class code
+3. Managed checks (hosted/code-only default):
+   - enter classroom code only (server URL hidden; baked `https://vibbit.tk.sg`)
    - generate and verify paste + `Revert`
    - test error-aware flow (empty prompt + page errors)
    - trigger conversion modal and verify retry + `Fix convert error`
-4. BYOK checks:
+4. BYOK checks (only when built with `VIBBIT_HOSTED_MANAGED=false`):
    - provider + model + key
    - generation, paste, and error-context fixing
 5. Reload extension and refresh MakeCode tabs after each build

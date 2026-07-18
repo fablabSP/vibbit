@@ -489,7 +489,7 @@ function renderLoginPage({
     <div class="panel">
       <h2>Sign in</h2>
       ${googleBlock}
-      <p class="hint">Students only need this server URL (<code>${escapeHtml(publicOrigin)}</code>) and your classroom code — or open <code>/join/CODE</code>.</p>
+      <p class="hint">Students using the Vibbit extension enter only your classroom code (server is baked in as <code>${escapeHtml(publicOrigin)}</code>). You can also share <code>/join/CODE</code>.</p>
     </div>
     ${magicBlock}
     ${devBlock}
@@ -577,7 +577,7 @@ function renderDashboardPage({
           <strong>${escapeHtml(classroom.name)}</strong>
           <div>Classroom code: <span class="code code-lg">${escapeHtml(classroom.code)}</span> · <a href="/join/${escapeHtml(classroom.code)}">Project code</a></div>
           <div class="hint">Join link: <code>${escapeHtml(publicOrigin)}/join/${escapeHtml(classroom.code)}</code></div>
-          <div class="hint">Students enter URL <code>${escapeHtml(publicOrigin)}</code> + this code in Vibbit Managed mode.</div>
+          <div class="hint">Students enter this code in Vibbit (server baked as <code>${escapeHtml(publicOrigin)}</code>).</div>
           <div class="hint">Credential profile: <code>${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}</code>${classroom.usingTeacherDefault ? " (teacher default)" : ""} · Provider: <code>${escapeHtml(classroom.resolvedProviderLabel || "Not set")}</code> · Model: <code>${escapeHtml(classroom.resolvedModel || "Not set")}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
           ${classroom.resolvedCustomBaseUrl
             ? `<div class="hint">Custom base URL: <code>${escapeHtml(classroom.resolvedCustomBaseUrl)}</code></div>`
@@ -637,9 +637,8 @@ function renderDashboardPage({
 
     <div class="panel">
       <h2>How students connect</h2>
-      <p>In Vibbit, choose <strong>Managed</strong>, then enter:</p>
-      <p>Server URL: <code>${escapeHtml(publicOrigin)}</code></p>
-      <p>Classroom code: the 5-letter code from a classroom below</p>
+      <p>In the Vibbit extension, students enter only the <strong>5-letter classroom code</strong> from a classroom below.</p>
+      <p class="hint">Server is already set to <code>${escapeHtml(publicOrigin)}</code>. Optional join page: <code>${escapeHtml(publicOrigin)}/join/CODE</code>.</p>
     </div>
 
     <h2>Credentials</h2>

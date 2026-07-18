@@ -30,10 +30,7 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://vibbit.dev.tk.sg/*",
-    "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://openrouter.ai/*",
+    "https://vibbit.tk.sg/*",
     "https://makecode.microbit.org/*",
     "https://arcade.makecode.com/*",
     "https://maker.makecode.com/*"

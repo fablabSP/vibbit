@@ -1,5 +1,5 @@
-const BACKEND = "https://vibbit.dev.tk.sg";
-const HOSTED_MANAGED = false;
+const BACKEND = "https://vibbit.tk.sg";
+const HOSTED_MANAGED = true;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {
@@ -217,8 +217,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Class Code</div>'
-    + '      <input id="setup-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <input id="setup-class-code" placeholder="5-letter code from your teacher" style="' + S_INPUT + '">'
     + '    </div>'
     + '  </div>'
 
@@ -320,8 +320,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Class Code</div>'
-    + '      <input id="set-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <input id="set-class-code" placeholder="5-letter code from your teacher" style="' + S_INPUT + '">'
     + '    </div>'
     + '  </div>'
 
@@ -1446,11 +1446,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── Monaco helpers ──────────────────────────────────────── */
   const clickLike = (root, labels) => {
     const list = labels.map((label) => label.toLowerCase());
-    const elements = [...root.querySelectorAll("button,[role='tab'],a,[aria-label]")].filter((node) => node && node.offsetParent !== null);
+    const doc = root && root.querySelectorAll ? root : (root && root.document) || document;
+    const elements = [...doc.querySelectorAll("button,[role='tab'],a,[aria-label]")].filter((node) => node && node.offsetParent !== null);
     for (const el of elements) {
       const text = ((el.innerText || el.textContent || "") + " " + (el.getAttribute("aria-label") || "")).trim().toLowerCase();
-      if (list.some((entry) => text === entry || text.includes(entry))) {
+      if (!list.some((entry) => text === entry || text.includes(entry))) continue;
+      if (typeof el.click === "function") {
         el.click();
+        return el;
+      }
+      if (typeof el.dispatchEvent === "function") {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         return el;
       }
     }

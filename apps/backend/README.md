@@ -41,7 +41,7 @@ The backend keeps provider API keys server-side and proxies generation requests 
    - API base URL (for example `https://api.openai.com/v1` or a LiteLLM URL like `http://localhost:4000/v1`)
    - API key
    - Model name
-4. Mint a classroom code and share **server URL + code** with students
+4. Mint a classroom code and share the **classroom code** with students (shipped extension is code-only against the hosted server)
 
 Each teacher can mint multiple classrooms. Codes can be rotated or deleted from the portal.
 
@@ -68,13 +68,13 @@ Recommended classroom flow:
 1. Teacher opens `/teacher`, configures a key, and mints a code.
 2. Teacher/student opens `/bookmarklet` and drags **Vibbit** to the bookmarks bar.
 3. Student opens a MakeCode project and clicks the bookmarklet.
-4. Student enters backend URL + class code in Vibbit managed mode.
+4. Student enters the classroom code in Vibbit (hosted extension is code-only).
 
 ## Classroom connection flow
 
 1. Teacher runs/deploys backend.
 2. Teacher signs in at `/teacher` and mints a classroom code (with their own API key/URL).
-3. Students enter URL + class code in Vibbit managed mode.
+3. Students enter the classroom code in Vibbit managed mode (hosted builds hide the server URL).
 4. Extension calls `POST /vibbit/connect` to get a short-lived session token.
 5. Extension calls `POST /vibbit/generate` with that token.
 6. Backend sends the request to the classroom’s OpenAI-compatible endpoint with that classroom’s key.

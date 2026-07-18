@@ -9,7 +9,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-const BACKEND = "https://vibbit.dev.tk.sg";
+const BACKEND = "https://vibbit.tk.sg";
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {

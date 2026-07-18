@@ -46,6 +46,25 @@ function svgToDataUri(svgMarkup) {
   return `data:image/svg+xml,${encodeURIComponent(svgMarkup.replace(/\s+/g, " ").trim())}`;
 }
 
+function parseBoolean(value, fallback) {
+  if (typeof value === "boolean") return value;
+  if (value == null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function readConstString(source, name) {
+  const match = source.match(new RegExp(`const ${name} = "(.*?)";`));
+  return match ? match[1] : "";
+}
+
+function readConstBoolean(source, name) {
+  const match = source.match(new RegExp(`const ${name} = (true|false);`));
+  return match ? match[1] === "true" : false;
+}
+
 async function build() {
   const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
@@ -74,18 +93,32 @@ async function build() {
     backend = String(backend).trim();
   }
 
+  const sourceHostedManaged = readConstBoolean(builtClient, "HOSTED_MANAGED");
+  const hostedManagedEnabled = parseBoolean(
+    process.env.VIBBIT_HOSTED_MANAGED,
+    hostedManagedProfile || sourceHostedManaged
+  );
+  builtClient = overrideConst(builtClient, "HOSTED_MANAGED", hostedManagedEnabled);
+
   if (backend) {
-    builtClient = overrideConst(builtClient, "BACKEND", backend);
-    const backendPermission = hostPermissionForBackend(backend);
-    const optionalByokPermissions = hostedManagedProfile ? [] : byokHostPermissions;
-    // Preserve MakeCode host permissions for toolbar-click flow
-    manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...optionalByokPermissions])];
+    builtClient = overrideConst(builtClient, "BACKEND", String(backend).trim());
   }
 
-  if (!hostedManagedProfile && appToken !== undefined) {
+  if (!hostedManagedEnabled && appToken !== undefined) {
     builtClient = overrideConst(builtClient, "APP_TOKEN", appToken);
-  } else if (hostedManagedProfile) {
+  } else if (hostedManagedEnabled) {
     builtClient = overrideConst(builtClient, "APP_TOKEN", "");
+  }
+
+  const effectiveBackend = readConstString(builtClient, "BACKEND");
+  if (effectiveBackend) {
+    const backendPermission = hostPermissionForBackend(effectiveBackend);
+    const optionalByokPermissions = hostedManagedEnabled ? [] : byokHostPermissions;
+    manifest.host_permissions = [...new Set([
+      ...makecodeHostPermissions,
+      backendPermission,
+      ...optionalByokPermissions
+    ])];
   }
 
   await rm(distDir, { recursive: true, force: true });
@@ -111,14 +144,14 @@ async function build() {
   ]);
 
   console.log("Built Chrome extension files in dist/");
-  if (hostedManagedProfile) {
-    console.log("- HOSTED_MANAGED enabled via VIBBIT_BUILD_PROFILE=hosted-managed");
+  if (hostedManagedEnabled) {
+    console.log("- HOSTED_MANAGED enabled (code-only Managed against baked BACKEND)");
   }
-  if (backend) {
-    console.log(`- BACKEND overridden via VIBBIT_BACKEND: ${backend}`);
+  if (effectiveBackend) {
+    console.log(`- BACKEND: ${effectiveBackend}`);
     console.log(`- host_permissions: ${manifest.host_permissions.join(", ")}`);
   }
-  if (appToken !== undefined) {
+  if (!hostedManagedEnabled && appToken !== undefined) {
     console.log("- APP_TOKEN overridden via VIBBIT_APP_TOKEN");
   }
 }

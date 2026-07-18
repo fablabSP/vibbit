@@ -50,7 +50,7 @@ Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet link
 
 - Classroom auth flow:
   - Teachers sign in at `{BACKEND}/teacher`, save an OpenAI-compatible API key + base URL, and mint a classroom code
-  - Students enter backend URL + class code in Vibbit
+  - Students enter the classroom code in Vibbit (hosted/code-only builds bake the server URL; self-hosted builds may still show a server field)
   - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
   - Generation uses that session token on `POST {BACKEND}/vibbit/generate` (routed with the classroom's key/URL)
 - Endpoints:
