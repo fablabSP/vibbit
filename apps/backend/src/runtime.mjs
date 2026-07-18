@@ -417,6 +417,9 @@ function createRuntimeConfig(envInput = {}) {
   ).trim();
   const providerConfig = createProviderConfig(env);
   const appToken = String(env.SERVER_APP_TOKEN || "").trim();
+  if (deployment.isHosted && appToken) {
+    throw new Error("Hosted mode rejects SERVER_APP_TOKEN. Use teacher classroom codes instead.");
+  }
 
   const classroomEnabled = appToken
     ? false
@@ -546,6 +549,12 @@ function handleOptions(origin, config) {
 }
 
 async function readJson(request, maxBytes = MAX_JSON_BYTES) {
+  const contentLength = Number(request.headers.get("content-length") || "");
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    const error = new Error("Payload too large");
+    error.statusCode = 413;
+    throw error;
+  }
   const text = await request.text();
   const size = new TextEncoder().encode(text).length;
   if (size > maxBytes) {
@@ -602,7 +611,7 @@ async function generateManaged(
   { target, request, currentCode, pageErrors, conversionDialog, provider, model },
   runtimeConfig,
   providerConfig,
-  { onUpstreamAttempt } = {}
+  { onUpstreamAttempt, outboundUrlPolicy } = {}
 ) {
   const effectiveProviderConfig = providerConfig || runtimeConfig.providerConfig;
   const selected = resolveProviderSelection(effectiveProviderConfig, provider, model);
@@ -618,6 +627,10 @@ async function generateManaged(
     1 + (runtimeConfig.emptyRetries || 0) + (runtimeConfig.validationRetries || 0)
   );
 
+  const fetchImpl = outboundUrlPolicy && typeof outboundUrlPolicy.fetchSafe === "function"
+    ? (url, init) => outboundUrlPolicy.fetchSafe(url, init, { purpose: "managed provider endpoint" })
+    : fetch;
+
   const callProvider = async (systemPrompt) => {
     if (upstreamAttempts >= maxAttempts) {
       throw new Error("Upstream attempt limit reached");
@@ -632,7 +645,8 @@ async function generateManaged(
           system: systemPrompt,
           user,
           signal,
-          customBaseUrl: providerBaseUrl
+          customBaseUrl: providerBaseUrl,
+          fetchImpl
         });
       }, runtimeConfig.requestTimeoutMs);
       if (typeof onUpstreamAttempt === "function") {
@@ -1484,7 +1498,11 @@ export function createBackendRuntime(options = {}) {
   const deployment = runtimeConfig.deployment;
   const outboundUrlPolicy = options.outboundUrlPolicy
     || createOutboundUrlPolicy(env, {
-      dnsLookup: typeof options.dnsLookup === "function" ? options.dnsLookup : undefined
+      dnsLookup: typeof options.dnsLookup === "function" ? options.dnsLookup : undefined,
+      // Tests inject dnsLookup and mock globalThis.fetch; keep that path mockable.
+      // Production (no injected dnsLookup) pins DNS on outbound provider calls.
+      pinDns: typeof options.dnsLookup !== "function",
+      fetchImpl: typeof options.outboundFetch === "function" ? options.outboundFetch : null
     });
   const rateLimits = options.rateLimits
     || createRateLimitController(env, {
@@ -1757,6 +1775,19 @@ export function createBackendRuntime(options = {}) {
     const joinMatch = pathname.match(/^\/join\/([A-Za-z0-9]{5})$/);
     if (joinMatch && request.method === "GET") {
       const corsHeaders = buildCorsHeaders(origin, runtimeConfig);
+      const clientIp = resolveTrustedClientIp(request, deployment) || "local";
+      const joinLimit = rateLimits.checkJoin({ clientIp });
+      if (!joinLimit.ok) {
+        return new Response(renderJoinUnavailablePage(), {
+          status: 429,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Retry-After": String(Math.max(1, Number(joinLimit.retryAfterSeconds) || 1)),
+            "Cache-Control": "no-store",
+            ...corsHeaders
+          }
+        });
+      }
       const joinCode = joinMatch[1];
       const availability = resolveJoinAvailability(teacherPortal.store, joinCode);
       const html = availability.available
@@ -1848,10 +1879,7 @@ export function createBackendRuntime(options = {}) {
           }, origin, runtimeConfig);
         }
 
-        const sessionToken = session
-          ? (String(request.headers.get("x-vibbit-session") || "").trim()
-            || extractBearerToken(request.headers.get("authorization")))
-          : "";
+        const sessionToken = session && session.token ? String(session.token) : "";
         const reservation = await rateLimits.reserveGenerate({
           sessionToken,
           classroomId
@@ -1869,6 +1897,7 @@ export function createBackendRuntime(options = {}) {
             runtimeConfig,
             providerConfig,
             {
+              outboundUrlPolicy,
               onUpstreamAttempt: async ({ success }) => {
                 await usageStore.recordUpstreamAttempt(classroomId || "legacy", { success });
               }

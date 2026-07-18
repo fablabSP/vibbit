@@ -108,7 +108,8 @@ export async function callManagedProvider({
   signal,
   customBaseUrl = "",
   temperature = 0.1,
-  maxTokens = 3072
+  maxTokens = 3072,
+  fetchImpl = fetch
 } = {}) {
   const selectedProvider = normaliseCredentialProvider(provider);
   const key = String(apiKey || "").trim();
@@ -124,7 +125,7 @@ export async function callManagedProvider({
         maxOutputTokens: maxTokens
       }
     };
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       method: "POST",
       signal,
       headers: { "Content-Type": "application/json" },
@@ -152,6 +153,7 @@ export async function callManagedProvider({
     user,
     signal,
     temperature,
-    maxTokens
+    maxTokens,
+    fetchImpl
   });
 }

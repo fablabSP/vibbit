@@ -84,6 +84,11 @@ export function createDeploymentPolicy(envInput = {}) {
   }
   const allowDevLogin = isHosted ? false : requestedDevLogin;
 
+  const magicLinkConfigured = Boolean(
+    String(env.VIBBIT_RESEND_API_KEY || env.RESEND_API_KEY || "").trim()
+  ) || parseBoolean(env.VIBBIT_MAGIC_LINK_DEV_CAPTURE, false);
+  const magicLinkEnabled = parseBoolean(env.VIBBIT_MAGIC_LINK_ENABLED, magicLinkConfigured);
+
   let publicOrigin = "";
   if (isHosted) {
     publicOrigin = parsePublicOrigin(env.VIBBIT_PUBLIC_ORIGIN);
@@ -92,10 +97,6 @@ export function createDeploymentPolicy(envInput = {}) {
         "Hosted mode requires VIBBIT_PUBLIC_ORIGIN (pathless https origin)."
       );
     }
-    const magicLinkConfigured = Boolean(
-      String(env.VIBBIT_RESEND_API_KEY || env.RESEND_API_KEY || "").trim()
-    ) || parseBoolean(env.VIBBIT_MAGIC_LINK_DEV_CAPTURE, false);
-    const magicLinkEnabled = parseBoolean(env.VIBBIT_MAGIC_LINK_ENABLED, magicLinkConfigured);
     if (!googleEnabled && !(magicLinkEnabled && magicLinkConfigured)) {
       throw new Error(
         "Hosted mode requires Google OAuth or configured magic-link email sign-in."
@@ -110,6 +111,13 @@ export function createDeploymentPolicy(envInput = {}) {
     }
   } else if (String(env.VIBBIT_PUBLIC_ORIGIN || "").trim()) {
     publicOrigin = parsePublicOrigin(env.VIBBIT_PUBLIC_ORIGIN);
+  }
+
+  // Magic-link emails must never be minted from a request Host header.
+  if (magicLinkEnabled && magicLinkConfigured && !publicOrigin) {
+    throw new Error(
+      "Magic-link sign-in requires VIBBIT_PUBLIC_ORIGIN (pathless https origin)."
+    );
   }
 
   const configuredAllowOrigin = String(env.VIBBIT_ALLOW_ORIGIN ?? "").trim();
@@ -176,8 +184,12 @@ function firstHeaderToken(value) {
 
 export function resolveTrustedClientIp(request, deploymentPolicy) {
   if (deploymentPolicy.trustProxy) {
-    const forwarded = firstHeaderToken(request.headers.get("x-forwarded-for"));
-    if (forwarded) return forwarded;
+    const forwarded = String(request.headers.get("x-forwarded-for") || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    // With one trusted reverse proxy, the rightmost address is the peer the proxy saw.
+    if (forwarded.length) return forwarded[forwarded.length - 1];
   }
   return "";
 }

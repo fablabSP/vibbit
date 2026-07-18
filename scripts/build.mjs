@@ -67,6 +67,9 @@ async function build() {
     if (!backend || !/^https:\/\//i.test(String(backend).trim())) {
       throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed requires VIBBIT_BACKEND to be an https URL");
     }
+    if (appToken) {
+      throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed rejects VIBBIT_APP_TOKEN");
+    }
     builtClient = overrideConst(builtClient, "HOSTED_MANAGED", true);
     backend = String(backend).trim();
   }
@@ -79,8 +82,10 @@ async function build() {
     manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...optionalByokPermissions])];
   }
 
-  if (appToken !== undefined) {
+  if (!hostedManagedProfile && appToken !== undefined) {
     builtClient = overrideConst(builtClient, "APP_TOKEN", appToken);
+  } else if (hostedManagedProfile) {
+    builtClient = overrideConst(builtClient, "APP_TOKEN", "");
   }
 
   await rm(distDir, { recursive: true, force: true });

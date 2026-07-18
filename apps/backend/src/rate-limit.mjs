@@ -45,6 +45,8 @@ export function createRateLimitConfig(envInput = {}) {
   return {
     connectPerIpPerMinute: parseInteger(env.VIBBIT_RATE_CONNECT_PER_IP_PER_MIN, 10, { min: 1, max: 1000 }),
     connectGlobalPerMinute: parseInteger(env.VIBBIT_RATE_CONNECT_GLOBAL_PER_MIN, 300, { min: 1, max: 100000 }),
+    joinPerIpPerMinute: parseInteger(env.VIBBIT_RATE_JOIN_PER_IP_PER_MIN, 30, { min: 1, max: 1000 }),
+    joinGlobalPerMinute: parseInteger(env.VIBBIT_RATE_JOIN_GLOBAL_PER_MIN, 600, { min: 1, max: 100000 }),
     generatePerSessionPerMinute: parseInteger(env.VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN, 6, { min: 1, max: 1000 }),
     generatePerClassroomPerMinute: parseInteger(env.VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN, 90, { min: 1, max: 100000 }),
     generatePerClassroomPerDay: parseInteger(env.VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY, 500, { min: 1, max: 1000000 }),
@@ -126,8 +128,29 @@ export function createRateLimitController(envInput = {}, {
       return { ok: true };
     },
 
+    checkJoin({ clientIp = "" } = {}) {
+      const ipKey = `join:ip:${clientIp || "unknown"}`;
+      const ipResult = bucket(
+        ipKey,
+        config.joinPerIpPerMinute,
+        config.joinPerIpPerMinute
+      ).take(1);
+      if (!ipResult.ok) return reject(ipResult.retryAfterSeconds, "join_ip");
+
+      const globalResult = bucket(
+        "join:global",
+        config.joinGlobalPerMinute,
+        config.joinGlobalPerMinute
+      ).take(1);
+      if (!globalResult.ok) return reject(globalResult.retryAfterSeconds, "join_global");
+
+      return { ok: true };
+    },
+
     async reserveGenerate({ sessionToken = "", classroomId = "" } = {}) {
-      const sessionKey = `generate:session:${sessionToken || "anonymous"}`;
+      // Canonical session id only — never trust raw request headers for bucket keys.
+      const canonicalSession = String(sessionToken || "").trim();
+      const sessionKey = `generate:session:${canonicalSession || "anonymous"}`;
       const sessionResult = bucket(
         sessionKey,
         config.generatePerSessionPerMinute,

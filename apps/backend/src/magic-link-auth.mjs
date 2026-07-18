@@ -87,16 +87,31 @@ export function createMagicLinkAuth(envInput = {}, {
 
     async requestLink({ email, publicOrigin, clientIp = "" }) {
       const normalised = normaliseEmail(email);
-      // Always return the same shape to avoid account enumeration.
       const generic = {
         ok: true,
         message: "If that email can sign in, a magic link has been sent."
       };
       if (!enabled || !normalised || !normalised.includes("@")) return generic;
 
+      let origin;
+      try {
+        origin = new URL(String(publicOrigin || "").trim());
+      } catch {
+        return generic;
+      }
+      if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/") {
+        // Refuse to mint links against untrusted/non-canonical origins.
+        return generic;
+      }
+
       prune();
       if (!rateLimit(`email:${normalised}`, 5, 15 * 60 * 1000)) return generic;
       if (!rateLimit(`ip:${clientIp || "unknown"}`, 20, 15 * 60 * 1000)) return generic;
+
+      // Invalidate prior outstanding links for this email.
+      for (const [hash, entry] of pending.entries()) {
+        if (entry && entry.email === normalised) pending.delete(hash);
+      }
 
       const token = randomBytes(32).toString("base64url");
       const hash = hashToken(token);
@@ -105,7 +120,7 @@ export function createMagicLinkAuth(envInput = {}, {
         expiresAt: now() + TOKEN_TTL_MS
       });
 
-      const link = `${String(publicOrigin || "").replace(/\/+$/, "")}/teacher/auth/magic/callback?token=${encodeURIComponent(token)}`;
+      const link = `${origin.origin}/teacher/auth/magic/callback?token=${encodeURIComponent(token)}`;
       try {
         await mailer({
           to: normalised,

@@ -18,7 +18,8 @@ export async function callOpenAICompatible({
   user,
   signal,
   temperature = 0.1,
-  maxTokens = 3072
+  maxTokens = 3072,
+  fetchImpl = fetch
 } = {}) {
   const key = String(apiKey || "").trim();
   if (!key) throw new Error("Missing API key for OpenAI-compatible endpoint");
@@ -34,7 +35,7 @@ export async function callOpenAICompatible({
     ]
   };
 
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     method: "POST",
     signal,
     redirect: "manual",

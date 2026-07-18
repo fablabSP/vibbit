@@ -401,7 +401,7 @@ function withTimeout(promise, timeoutMs) {
   return promise(controller.signal).finally(() => clearTimeout(timeoutId));
 }
 
-async function testCredentialProfileConnection(profile) {
+async function testCredentialProfileConnection(profile, { outboundUrlPolicy } = {}) {
   const provider = normaliseCredentialProvider(profile && profile.provider);
   const apiKey = String((profile && profile.apiKey) || "").trim();
   const defaultModel = String((profile && profile.defaultModel) || "").trim()
@@ -411,6 +411,9 @@ async function testCredentialProfileConnection(profile) {
   if (provider === "custom" && !customBaseUrl) {
     throw new Error("Custom provider requires a custom base URL");
   }
+  const fetchImpl = outboundUrlPolicy && typeof outboundUrlPolicy.fetchSafe === "function"
+    ? (url, init) => outboundUrlPolicy.fetchSafe(url, init, { purpose: "credential profile test" })
+    : fetch;
   return withTimeout((signal) => callManagedProvider({
     provider,
     apiKey,
@@ -419,7 +422,8 @@ async function testCredentialProfileConnection(profile) {
     user: "Reply with OK.",
     signal,
     customBaseUrl,
-    maxTokens: 32
+    maxTokens: 32,
+    fetchImpl
   }), 12000);
 }
 
@@ -1008,9 +1012,10 @@ export function createTeacherPortal({
       }
       const body = await readFormBody(request);
       const clientIp = resolveTrustedClientIp(request, deploymentPolicy || { trustProxy: false }) || "local";
+      const magicOrigin = (deploymentPolicy && deploymentPolicy.publicOrigin) || publicOrigin;
       await magicLink.requestLink({
         email: body.email,
-        publicOrigin,
+        publicOrigin: magicOrigin,
         clientIp
       });
       return redirectResponse(
@@ -1118,7 +1123,7 @@ export function createTeacherPortal({
               : existingProfile.apiKey
           };
           try {
-            await testCredentialProfileConnection(draftProfile);
+            await testCredentialProfileConnection(draftProfile, { outboundUrlPolicy });
             await store.updateCredentialProfile(teacher.id, profileId, {
               lastTestedAt: new Date().toISOString(),
               lastTestOk: true

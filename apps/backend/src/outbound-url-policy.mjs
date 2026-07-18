@@ -4,7 +4,10 @@
  */
 
 import { lookup as defaultDnsLookup } from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import { isIP } from "node:net";
+import { URL as NodeURL } from "node:url";
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -52,26 +55,63 @@ function isBlockedIpv4(ip) {
   const checks = [
     [0x00000000, 0xff000000], // 0.0.0.0/8
     [0x0a000000, 0xff000000], // 10.0.0.0/8
+    [0x64400000, 0xffc00000], // 100.64.0.0/10 CGNAT
     [0x7f000000, 0xff000000], // 127.0.0.0/8
     [0xa9fe0000, 0xffff0000], // 169.254.0.0/16
     [0xac100000, 0xfff00000], // 172.16.0.0/12
+    [0xc0000000, 0xffffff00], // 192.0.0.0/24
     [0xc0a80000, 0xffff0000], // 192.168.0.0/16
+    [0xc6120000, 0xfffe0000], // 198.18.0.0/15 benchmarking
     [0xe0000000, 0xf0000000], // 224.0.0.0/4 multicast
     [0xf0000000, 0xf0000000] // 240.0.0.0/4 reserved
   ];
   return checks.some(([base, mask]) => ((value & mask) >>> 0) === base);
 }
 
+function expandIpv6(ip) {
+  const raw = String(ip || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!raw.includes(":")) return "";
+  const sides = raw.split("::");
+  let head = sides[0] ? sides[0].split(":") : [];
+  let tail = sides[1] ? sides[1].split(":") : [];
+  if (sides.length > 2) return "";
+  if (sides.length === 1) {
+    head = raw.split(":");
+    tail = [];
+  }
+  const missing = 8 - (head.filter(Boolean).length + tail.filter(Boolean).length);
+  if (missing < 0) return "";
+  const mid = Array.from({ length: missing }, () => "0");
+  const parts = [...head.filter(Boolean), ...mid, ...tail.filter(Boolean)]
+    .map((part) => part.padStart(4, "0"));
+  if (parts.length !== 8) return "";
+  return parts.join(":");
+}
+
 function isBlockedIpv6(ip) {
-  const normalised = String(ip || "").toLowerCase();
-  if (normalised === "::" || normalised === "::1") return true;
-  if (normalised.startsWith("fc") || normalised.startsWith("fd")) return true; // unique local
-  if (normalised.startsWith("fe80:")) return true; // link-local
-  if (normalised.startsWith("ff")) return true; // multicast
-  // IPv4-mapped IPv6
-  const mapped = normalised.match(/^:ffff:(\d+\.\d+\.\d+\.\d+)$/i)
-    || normalised.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (mapped) return isBlockedIpv4(mapped[1]);
+  const raw = String(ip || "").toLowerCase().replace(/^\[|\]$/g, "");
+  // Handle dotted IPv4-mapped forms before expand (e.g. ::ffff:127.0.0.1).
+  const dottedMapped = raw.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
+    || raw.match(/^0:0:0:0:0:ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (dottedMapped) return isBlockedIpv4(dottedMapped[1]);
+
+  const normalised = expandIpv6(raw) || raw;
+  if (!normalised) return true;
+  if (normalised === "0000:0000:0000:0000:0000:0000:0000:0000") return true;
+  if (normalised === "0000:0000:0000:0000:0000:0000:0000:0001") return true;
+  if (normalised.startsWith("fc") || normalised.startsWith("fd")) return true;
+  if (normalised.startsWith("fe80:")) return true;
+  if (normalised.startsWith("ff")) return true;
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d or ::ffff:xxxx:yyyy)
+  const dotted = normalised.match(/^0000:0000:0000:0000:0000:ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) return isBlockedIpv4(dotted[1]);
+  const hexMapped = normalised.match(/^0000:0000:0000:0000:0000:ffff:([0-9a-f]{4}):([0-9a-f]{4})$/);
+  if (hexMapped) {
+    const hi = Number.parseInt(hexMapped[1], 16);
+    const lo = Number.parseInt(hexMapped[2], 16);
+    const ipv4 = `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+    return isBlockedIpv4(ipv4);
+  }
   return false;
 }
 
@@ -94,7 +134,80 @@ function hostMatchesAllowList(hostname, allowList) {
   return false;
 }
 
-export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsLookup } = {}) {
+function addressFamily(ip) {
+  const version = isIP(ip);
+  if (version === 4) return 4;
+  if (version === 6) return 6;
+  return 0;
+}
+
+/**
+ * Fetch that pins DNS to addresses validated at policy time (mitigates DNS rebinding).
+ */
+export function fetchWithPinnedAddresses(url, init = {}, pinnedAddresses = []) {
+  const addresses = [...new Set((pinnedAddresses || []).map(String).filter(Boolean))];
+  if (!addresses.length) {
+    return Promise.reject(new Error("No pinned addresses available for outbound fetch"));
+  }
+
+  const parsed = new NodeURL(String(url));
+  const transport = parsed.protocol === "http:" ? http : https;
+  const method = String(init.method || "GET").toUpperCase();
+  const headers = { ...(init.headers || {}) };
+  const body = init.body == null ? null : Buffer.from(String(init.body));
+  if (body && !headers["Content-Length"] && !headers["content-length"]) {
+    headers["Content-Length"] = String(body.length);
+  }
+
+  const lookup = (hostname, options, callback) => {
+    const wantedFamily = typeof options === "number"
+      ? options
+      : (options && options.family) || 0;
+    const match = addresses.find((address) => {
+      const family = addressFamily(address);
+      return family && (!wantedFamily || family === wantedFamily);
+    }) || addresses[0];
+    const family = addressFamily(match);
+    if (!family) {
+      callback(new Error("Pinned address is not a valid IP"));
+      return;
+    }
+    callback(null, match, family);
+  };
+
+  return new Promise((resolve, reject) => {
+    const request = transport.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === "http:" ? 80 : 443),
+      path: `${parsed.pathname}${parsed.search}`,
+      method,
+      headers,
+      lookup,
+      signal: init.signal
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const buffer = Buffer.concat(chunks);
+        resolve(new Response(buffer, {
+          status: response.statusCode || 0,
+          statusText: response.statusMessage || "",
+          headers: response.headers
+        }));
+      });
+    });
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+export function createOutboundUrlPolicy(envInput = {}, {
+  dnsLookup = defaultDnsLookup,
+  fetchImpl = null,
+  pinDns = true
+} = {}) {
   const env = envInput || {};
   const mode = String(env.VIBBIT_DEPLOYMENT_MODE || "self-hosted").trim().toLowerCase();
   const isHosted = mode === "hosted";
@@ -104,6 +217,7 @@ export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsL
     ...BUILTIN_ENDPOINT_ALLOWLIST,
     ...configuredAllowList
   ])];
+  const shouldPinDns = pinDns && parseBoolean(env.VIBBIT_OUTBOUND_DNS_PINNING, true);
 
   async function resolveAddresses(hostname) {
     if (isIP(hostname)) return [hostname];
@@ -157,8 +271,8 @@ export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsL
       throw new Error(`${purpose} host is not on the operator allow-list`);
     }
 
+    let addresses = [];
     if (!allowPrivateEndpoints || isHosted) {
-      let addresses;
       try {
         addresses = await resolveAddresses(hostname);
       } catch {
@@ -172,12 +286,21 @@ export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsL
           throw new Error(`${purpose} resolves to a private or local address`);
         }
       }
+    } else if (isIP(hostname)) {
+      addresses = [hostname];
+    } else {
+      try {
+        addresses = await resolveAddresses(hostname);
+      } catch {
+        addresses = [];
+      }
     }
 
     return {
       href: parsed.toString().replace(/\/+$/, ""),
       hostname,
-      protocol: parsed.protocol
+      protocol: parsed.protocol,
+      addresses
     };
   }
 
@@ -187,11 +310,23 @@ export function createOutboundUrlPolicy(envInput = {}, { dnsLookup = defaultDnsL
     return assertSafeUrl(location, { purpose });
   }
 
+  async function fetchSafe(url, init = {}, { purpose = "custom endpoint" } = {}) {
+    const safe = await assertSafeUrl(url, { purpose });
+    if (typeof fetchImpl === "function") {
+      return fetchImpl(url, init, safe);
+    }
+    if (shouldPinDns && safe.addresses.length) {
+      return fetchWithPinnedAddresses(url, init, safe.addresses);
+    }
+    return fetch(url, init);
+  }
+
   return {
     isHosted,
     allowPrivateEndpoints,
     allowList,
     assertSafeUrl,
-    assertSafeRedirect
+    assertSafeRedirect,
+    fetchSafe
   };
 }

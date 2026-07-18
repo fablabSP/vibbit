@@ -46,14 +46,43 @@ function fromBase64Url(text) {
   return Buffer.from(String(text || ""), "base64url");
 }
 
+function tryDecryptValidEnvelope(value, key, expectedAad) {
+  const parts = String(value || "").split(".");
+  if (parts.length !== 5 || parts[0] !== ENVELOPE_PREFIX) return null;
+  let aadBuffer;
+  let iv;
+  let ciphertext;
+  let tag;
+  try {
+    aadBuffer = fromBase64Url(parts[1]);
+    iv = fromBase64Url(parts[2]);
+    ciphertext = fromBase64Url(parts[3]);
+    tag = fromBase64Url(parts[4]);
+  } catch {
+    return null;
+  }
+  if (aadBuffer.toString("utf8") !== String(expectedAad || "")) return null;
+  if (iv.length !== IV_BYTES || tag.length !== AUTH_TAG_BYTES || !ciphertext.length) return null;
+  try {
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(aadBuffer);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 export function encryptSecret(plaintext, key, aad = "") {
   const value = String(plaintext ?? "");
   if (!value) return "";
   if (!key || key.length !== KEY_BYTES) {
     throw new Error("Encryption key is not configured");
   }
-  if (isEncryptedEnvelope(value)) {
-    // Never double-encrypt an existing envelope.
+
+  // Idempotent only for *valid* envelopes for this key+AAD.
+  // Plaintext that merely starts with "v1." is always encrypted.
+  if (isEncryptedEnvelope(value) && tryDecryptValidEnvelope(value, key, aad) != null) {
     return value;
   }
 
@@ -82,21 +111,32 @@ export function decryptSecret(envelope, key, expectedAad = "") {
 
   const parts = value.split(".");
   if (parts.length !== 5 || parts[0] !== ENVELOPE_PREFIX) {
-    throw new Error("Malformed credential envelope");
+    // Looks like an envelope prefix but is not a valid ciphertext — treat as plaintext
+    // so teacher-entered keys beginning with "v1." can still be migrated/encrypted.
+    return value;
   }
 
   const [, aadB64, ivB64, ciphertextB64, tagB64] = parts;
-  const aadBuffer = fromBase64Url(aadB64);
+  let aadBuffer;
+  let iv;
+  let ciphertext;
+  let tag;
+  try {
+    aadBuffer = fromBase64Url(aadB64);
+    iv = fromBase64Url(ivB64);
+    ciphertext = fromBase64Url(ciphertextB64);
+    tag = fromBase64Url(tagB64);
+  } catch {
+    return value;
+  }
+
   const expected = String(expectedAad || "");
   if (aadBuffer.toString("utf8") !== expected) {
     throw new Error("Credential envelope AAD mismatch");
   }
-
-  const iv = fromBase64Url(ivB64);
-  const ciphertext = fromBase64Url(ciphertextB64);
-  const tag = fromBase64Url(tagB64);
-  if (iv.length !== IV_BYTES || tag.length !== AUTH_TAG_BYTES) {
-    throw new Error("Malformed credential envelope");
+  if (iv.length !== IV_BYTES || tag.length !== AUTH_TAG_BYTES || !ciphertext.length) {
+    // Not a valid envelope; leave as plaintext for migration/encrypt-on-save.
+    return value;
   }
 
   try {

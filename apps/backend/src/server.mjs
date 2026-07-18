@@ -16,9 +16,12 @@ function readStateFile(filePath) {
     const raw = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") return parsed;
-  } catch {
+    throw new Error("State file did not contain a JSON object");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return {};
+    const message = error && error.message ? error.message : "Unable to read state file";
+    throw new Error(`Refusing to start: ${message}`);
   }
-  return {};
 }
 
 function writeStateFile(filePath, state) {
@@ -41,7 +44,13 @@ if (!stateCodec.secretBox.hasKey) {
   );
 }
 
-let persistedState = readStateFile(STATE_FILE);
+let persistedState;
+try {
+  persistedState = readStateFile(STATE_FILE);
+} catch (error) {
+  console.error(`[Vibbit backend] ${error.message || error}`);
+  process.exit(1);
+}
 const envAdminAuthToken = String(process.env.VIBBIT_ADMIN_TOKEN || "").trim();
 let adminAuthToken = envAdminAuthToken || String(persistedState.adminAuthToken || "").trim();
 if (!adminAuthToken) {
