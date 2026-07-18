@@ -429,6 +429,9 @@ function createRuntimeConfig(envInput = {}) {
   const classroomEnabled = appToken
     ? false
     : parseBoolean(env.VIBBIT_CLASSROOM_ENABLED, true);
+  if (deployment.isHosted && !classroomEnabled) {
+    throw new Error("Hosted mode requires classroom auth. Do not set VIBBIT_CLASSROOM_ENABLED=false.");
+  }
   const classCodeLength = parseInteger(env.VIBBIT_CLASSROOM_CODE_LENGTH, CLASS_CODE_LENGTH, {
     min: CLASS_CODE_LENGTH,
     max: CLASS_CODE_LENGTH
@@ -456,7 +459,10 @@ function createRuntimeConfig(envInput = {}) {
 
   let authMode = "none";
   if (appToken) authMode = "app-token";
-  else if (classroomEnabled) authMode = "classroom";
+  else if (classroomEnabled || deployment.isHosted) authMode = "classroom";
+  if (deployment.isHosted && authMode !== "classroom") {
+    throw new Error("Hosted mode requires classroom auth.");
+  }
 
   return {
     allowOrigin,

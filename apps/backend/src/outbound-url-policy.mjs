@@ -160,19 +160,28 @@ export function fetchWithPinnedAddresses(url, init = {}, pinnedAddresses = []) {
   }
 
   const lookup = (hostname, options, callback) => {
-    const wantedFamily = typeof options === "number"
-      ? options
-      : (options && options.family) || 0;
-    const match = addresses.find((address) => {
-      const family = addressFamily(address);
-      return family && (!wantedFamily || family === wantedFamily);
-    }) || addresses[0];
-    const family = addressFamily(match);
-    if (!family) {
-      callback(new Error("Pinned address is not a valid IP"));
+    let opts = options;
+    let cb = callback;
+    if (typeof opts === "function") {
+      cb = opts;
+      opts = {};
+    }
+    const wantedFamily = typeof opts === "number"
+      ? opts
+      : (opts && opts.family) || 0;
+    const wantAll = Boolean(opts && typeof opts === "object" && opts.all);
+    const matches = addresses
+      .map((address) => ({ address, family: addressFamily(address) }))
+      .filter((item) => item.family && (!wantedFamily || item.family === wantedFamily));
+    if (!matches.length) {
+      cb(new Error("Pinned address is not a valid IP"));
       return;
     }
-    callback(null, match, family);
+    if (wantAll) {
+      cb(null, matches);
+      return;
+    }
+    cb(null, matches[0].address, matches[0].family);
   };
 
   return new Promise((resolve, reject) => {

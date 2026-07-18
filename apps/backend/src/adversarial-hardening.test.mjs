@@ -285,6 +285,43 @@ test("magic-link requires VIBBIT_PUBLIC_ORIGIN even in self-hosted mode", () => 
   );
 });
 
+test("hosted mode rejects VIBBIT_CLASSROOM_ENABLED=false auth bypass", () => {
+  assert.throws(
+    () => createBackendRuntime({
+      env: {
+        VIBBIT_DEPLOYMENT_MODE: "hosted",
+        VIBBIT_PUBLIC_ORIGIN: "https://vibbit.example",
+        VIBBIT_GOOGLE_CLIENT_ID: "cid",
+        VIBBIT_GOOGLE_CLIENT_SECRET: "secret",
+        VIBBIT_CREDENTIAL_ENCRYPTION_KEY: ENCRYPTION_KEY,
+        VIBBIT_CLASSROOM_ENABLED: "false"
+      }
+    }),
+    /Hosted mode requires classroom auth/
+  );
+});
+
+test("fetchWithPinnedAddresses works when Node requests options.all", async () => {
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const response = await fetchWithPinnedAddresses(
+      `http://pin.example.test:${port}/health`,
+      { method: "GET" },
+      ["127.0.0.1"]
+    );
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).ok, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("parseEncryptionKey still accepts base64url keys", () => {
   assert.deepEqual(parseEncryptionKey(ENCRYPTION_KEY), TEST_KEY);
 });
