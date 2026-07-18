@@ -6,6 +6,8 @@ import { MAKECODE_DEFAULT_ORIGINS } from "./deployment-policy.mjs";
 const HOSTED_PUBLIC_ORIGIN = "https://vibbit.example";
 const FAKE_GOOGLE_CLIENT_ID = "fake-google-client-id";
 const FAKE_GOOGLE_CLIENT_SECRET = "fake-google-client-secret";
+// 32-byte key, base64url-encoded for hosted fail-closed tests.
+const FAKE_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64url");
 
 const seededTeacherClassroom = {
   teachers: {
@@ -50,6 +52,7 @@ function createHostedRuntime({
       VIBBIT_PUBLIC_ORIGIN: HOSTED_PUBLIC_ORIGIN,
       VIBBIT_GOOGLE_CLIENT_ID: FAKE_GOOGLE_CLIENT_ID,
       VIBBIT_GOOGLE_CLIENT_SECRET: FAKE_GOOGLE_CLIENT_SECRET,
+      VIBBIT_CREDENTIAL_ENCRYPTION_KEY: FAKE_ENCRYPTION_KEY,
       VIBBIT_CLASSROOM_ENABLED: "true",
       VIBBIT_CLASSROOM_CODE: "LEGACY",
       VIBBIT_CLASSROOM_CODE_AUTO: "false",
@@ -131,6 +134,13 @@ test("hosted startup: Google OAuth credentials are required", () => {
       }
     }),
     "Hosted mode requires VIBBIT_GOOGLE_CLIENT_ID and VIBBIT_GOOGLE_CLIENT_SECRET"
+  );
+});
+
+test("hosted startup: missing VIBBIT_CREDENTIAL_ENCRYPTION_KEY fails closed", () => {
+  assertThrowsWithMessage(
+    () => createHostedRuntime({ env: { VIBBIT_CREDENTIAL_ENCRYPTION_KEY: "" } }),
+    "Hosted mode requires VIBBIT_CREDENTIAL_ENCRYPTION_KEY"
   );
 });
 

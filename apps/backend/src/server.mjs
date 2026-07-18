@@ -4,9 +4,11 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createBackendRuntime } from "./runtime.mjs";
 import { sanitiseTeacherPortalState } from "./classroom-store.mjs";
+import { createStateCodec } from "./state-codec.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_FILE = resolve(process.env.VIBBIT_STATE_FILE || ".vibbit-backend-state.json");
+const STATE_SCHEMA_VERSION = 3;
 
 function readStateFile(filePath) {
   try {
@@ -30,8 +32,12 @@ function createAdminAuthToken() {
   return "vba_" + randomBytes(24).toString("base64url");
 }
 
-function persistState(next) {
-  writeStateFile(STATE_FILE, next);
+const stateCodec = createStateCodec(process.env);
+if (!stateCodec.secretBox.hasKey) {
+  console.warn(
+    "[Vibbit backend] WARNING: VIBBIT_CREDENTIAL_ENCRYPTION_KEY is unset; "
+    + "teacher/admin API keys will be stored as plaintext. Set a 32-byte base64 key for production."
+  );
 }
 
 let persistedState = readStateFile(STATE_FILE);
@@ -39,47 +45,83 @@ const envAdminAuthToken = String(process.env.VIBBIT_ADMIN_TOKEN || "").trim();
 let adminAuthToken = envAdminAuthToken || String(persistedState.adminAuthToken || "").trim();
 if (!adminAuthToken) {
   adminAuthToken = createAdminAuthToken();
-  persistedState = {
-    ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-    version: 2,
-    updatedAt: new Date().toISOString(),
-    adminAuthToken
-  };
-  persistState(persistedState);
 }
 
-const teacherPortalState = sanitiseTeacherPortalState(persistedState.teacherPortalState || {
+const rawTeacherPortalState = persistedState.teacherPortalState || {
   teachers: persistedState.teachers,
   classrooms: persistedState.classrooms
-});
+};
+const rawAdminProviderState = persistedState.adminProviderState || {};
 
-function writePersistedSlice(mutator) {
-  const base = {
-    ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-    version: 2,
+let teacherPortalState;
+let adminProviderState;
+try {
+  teacherPortalState = sanitiseTeacherPortalState(
+    stateCodec.decryptTeacherPortalState(rawTeacherPortalState)
+  );
+  adminProviderState = stateCodec.decryptAdminProviderState(rawAdminProviderState);
+} catch (error) {
+  const message = error && error.message ? error.message : "Failed to decrypt persisted state";
+  console.error(`[Vibbit backend] ${message}`);
+  console.error("[Vibbit backend] Refusing to start without rewriting corrupted or undecryptable state.");
+  process.exit(1);
+}
+
+function buildPersistedSnapshot({
+  nextAdminProviderState = adminProviderState,
+  nextTeacherPortalState = teacherPortalState
+} = {}) {
+  return {
+    version: STATE_SCHEMA_VERSION,
     updatedAt: new Date().toISOString(),
     adminAuthToken,
-    teacherPortalState: (persistedState && persistedState.teacherPortalState) || teacherPortalState
+    adminProviderState: stateCodec.encryptAdminProviderState(nextAdminProviderState),
+    teacherPortalState: stateCodec.encryptTeacherPortalState(
+      sanitiseTeacherPortalState(nextTeacherPortalState)
+    )
   };
-  persistedState = mutator(base);
-  persistState(persistedState);
+}
+
+function persistSnapshot(snapshot) {
+  writeStateFile(STATE_FILE, snapshot);
+  persistedState = snapshot;
+}
+
+// Eager migration: rewrite plaintext credentials when an encryption key is configured.
+const needsMigration = stateCodec.secretBox.hasKey && (
+  stateCodec.teacherPortalNeedsMigration(rawTeacherPortalState)
+  || stateCodec.adminProviderNeedsMigration(rawAdminProviderState)
+  || Number(persistedState.version || 0) < STATE_SCHEMA_VERSION
+  || !persistedState.adminAuthToken
+);
+
+if (needsMigration || !persistedState.adminAuthToken) {
+  try {
+    persistSnapshot(buildPersistedSnapshot());
+  } catch (error) {
+    const message = error && error.message ? error.message : "Failed to migrate state file";
+    console.error(`[Vibbit backend] ${message}`);
+    process.exit(1);
+  }
 }
 
 const runtime = createBackendRuntime({
   env: process.env,
   adminAuthToken,
-  adminProviderState: persistedState.adminProviderState || {},
+  adminProviderState,
   teacherPortalState,
   persistAdminProviderState: async (nextAdminProviderState) => {
-    writePersistedSlice((current) => ({
-      ...current,
-      adminProviderState: nextAdminProviderState
+    adminProviderState = nextAdminProviderState;
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState,
+      nextTeacherPortalState: teacherPortalState
     }));
   },
   persistTeacherPortalState: async (nextTeacherPortalState) => {
-    writePersistedSlice((current) => ({
-      ...current,
-      teacherPortalState: sanitiseTeacherPortalState(nextTeacherPortalState)
+    teacherPortalState = nextTeacherPortalState;
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState
     }));
   }
 });
@@ -164,6 +206,11 @@ server.listen(PORT, () => {
   const listenUrl = `http://localhost:${PORT}`;
   const lines = runtime.getStartupInfo({ listenUrl });
   for (const line of lines) console.log(line);
-  console.log(`[Vibbit backend] Admin panel -> URL: ${listenUrl}/admin?admin=${adminAuthToken}`);
+  if (runtime.config.deployment && runtime.config.deployment.adminPanelEnabled) {
+    console.log(`[Vibbit backend] Admin panel -> URL: ${listenUrl}/admin?admin=${adminAuthToken}`);
+  }
   console.log(`[Vibbit backend] State file=${STATE_FILE}`);
+  console.log(
+    `[Vibbit backend] Credential encryption=${stateCodec.secretBox.hasKey ? "enabled" : "disabled"}`
+  );
 });

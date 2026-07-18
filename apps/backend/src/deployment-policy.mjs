@@ -3,6 +3,8 @@
  * Hosted mode fails closed for classroom multi-tenant safety.
  */
 
+import { parseEncryptionKey } from "./secret-box.mjs";
+
 const MAKECODE_DEFAULT_ORIGINS = [
   "https://makecode.microbit.org",
   "https://arcade.makecode.com",
@@ -93,6 +95,13 @@ export function createDeploymentPolicy(envInput = {}) {
     if (!googleEnabled) {
       throw new Error(
         "Hosted mode requires VIBBIT_GOOGLE_CLIENT_ID and VIBBIT_GOOGLE_CLIENT_SECRET."
+      );
+    }
+    // Fail closed: hosted always encrypts credentials at rest.
+    const encryptionKey = parseEncryptionKey(env.VIBBIT_CREDENTIAL_ENCRYPTION_KEY || "");
+    if (!encryptionKey) {
+      throw new Error(
+        "Hosted mode requires VIBBIT_CREDENTIAL_ENCRYPTION_KEY (32-byte base64/base64url)."
       );
     }
   } else if (String(env.VIBBIT_PUBLIC_ORIGIN || "").trim()) {

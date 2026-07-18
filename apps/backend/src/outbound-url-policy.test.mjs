@@ -7,6 +7,7 @@ import {
 } from "./outbound-url-policy.mjs";
 
 const PUBLIC_DNS_ADDRESS = "203.0.113.10";
+const FAKE_ENCRYPTION_KEY = Buffer.alloc(32, 1).toString("base64url");
 
 /** Documentation-range address; treated as public by the policy. */
 const publicDnsLookup = async () => [{ address: PUBLIC_DNS_ADDRESS, family: 4 }];
@@ -21,6 +22,7 @@ function hostedEnv(overrides = {}) {
     VIBBIT_PUBLIC_ORIGIN: "https://vibbit.example",
     VIBBIT_GOOGLE_CLIENT_ID: "fake-google-client-id",
     VIBBIT_GOOGLE_CLIENT_SECRET: "fake-google-client-secret",
+    VIBBIT_CREDENTIAL_ENCRYPTION_KEY: FAKE_ENCRYPTION_KEY,
     VIBBIT_CLASSROOM_ENABLED: "true",
     VIBBIT_CLASSROOM_CODE: "LEGACY",
     VIBBIT_CLASSROOM_CODE_AUTO: "false",
