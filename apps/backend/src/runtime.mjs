@@ -17,6 +17,7 @@ import {
   resolveJoinAvailability
 } from "./join-page.mjs";
 import { createTeacherPortal } from "./teacher-portal.mjs";
+import { assertModelOverrideMatchesTestedProfile } from "./classroom-store.mjs";
 import {
   createDeploymentPolicy,
   resolveRequestPublicOrigin,
@@ -1597,6 +1598,14 @@ export function createBackendRuntime(options = {}) {
         { statusCode: 503 }
       );
     }
+    try {
+      assertModelOverrideMatchesTestedProfile(profile, classroom.modelOverride);
+    } catch (error) {
+      throw Object.assign(
+        new Error((error && error.message) || "Classroom model is not ready"),
+        { statusCode: 503 }
+      );
+    }
     if (profile.provider === "custom") {
       try {
         await outboundUrlPolicy.assertSafeUrl(profile.customBaseUrl, {
@@ -1661,6 +1670,14 @@ export function createBackendRuntime(options = {}) {
         if (!effectiveProfile.apiKey || effectiveProfile.lastTestOk !== true) {
           return respondJson(503, {
             error: "Classroom is not ready yet. Ask your teacher to test and save the AI account."
+          }, origin, runtimeConfig);
+        }
+        try {
+          assertModelOverrideMatchesTestedProfile(effectiveProfile, teacherClassroom.modelOverride);
+        } catch (error) {
+          return respondJson(503, {
+            error: (error && error.message)
+              || "Classroom model is not ready. Ask your teacher to clear or retest the classroom model."
           }, origin, runtimeConfig);
         }
         classroomId = teacherClassroom.id;

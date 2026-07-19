@@ -236,6 +236,59 @@ test("failed Test and save keeps a classroom-used ready AI account unchanged", a
   assert.equal(connect.status, 200);
 });
 
+test("connect rejects classrooms with an untested model override", async () => {
+  const runtime = createClassroomRuntime({
+    teachers: {
+      "local:teacher@school.edu": {
+        id: "local:teacher@school.edu",
+        email: "teacher@school.edu",
+        name: "Ms Tan",
+        provider: "local",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    credentialProfiles: {
+      cp_ready: {
+        id: "cp_ready",
+        teacherId: "local:teacher@school.edu",
+        name: "Ready",
+        provider: "openai",
+        apiKey: "sk-ready",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: true,
+        lastTestedAt: "2026-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    classrooms: {
+      cls_override: {
+        id: "cls_override",
+        teacherId: "local:teacher@school.edu",
+        name: "Override",
+        code: "OVERRIDE01",
+        credentialProfileId: "cp_ready",
+        modelOverride: "gpt-4.1-mini",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Vibbit-Class-Code": "OVERRIDE01"
+    },
+    body: JSON.stringify({ classCode: "OVERRIDE01" })
+  }));
+  assert.equal(connect.status, 503);
+  const body = await connect.json();
+  assert.match(String(body.error || ""), /tested AI account model/i);
+});
+
 test("connect rejects classrooms whose AI account is untested", async () => {
   const runtime = createClassroomRuntime({
     teachers: {

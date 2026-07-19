@@ -80,12 +80,33 @@ export function createTeacherId(provider, subject) {
   return `${safeProvider}:${safeSubject}`;
 }
 
+const VERIFIED_TEACHER_PROVIDERS = new Set(["google", "magic"]);
+
+export function isVerifiedTeacherProvider(provider) {
+  return VERIFIED_TEACHER_PROVIDERS.has(String(provider || "").trim().toLowerCase());
+}
+
 export function isCredentialProfileReady(profile) {
   return Boolean(
     profile
     && String(profile.apiKey || "").trim()
     && profile.lastTestOk === true
   );
+}
+
+export function assertModelOverrideMatchesTestedProfile(profile, modelOverride = "") {
+  const override = String(modelOverride || "").trim();
+  if (!override) return "";
+  if (!isCredentialProfileReady(profile)) {
+    throw new Error("Test the AI account successfully before setting a classroom model");
+  }
+  const testedModel = String(profile.defaultModel || "").trim();
+  if (override !== testedModel) {
+    throw new Error(
+      "Classroom model must match the tested AI account model (leave blank to use the tested default)"
+    );
+  }
+  return override;
 }
 
 export function normaliseApiBaseUrl(value) {
@@ -367,18 +388,40 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     return Object.values(state.teachers).find((teacher) => teacher.email === normalised) || null;
   };
 
+  const findUniqueVerifiedTeacherByEmail = (email) => {
+    const normalised = String(email || "").trim().toLowerCase();
+    if (!normalised) return null;
+    const matches = Object.values(state.teachers).filter((teacher) => (
+      teacher
+      && teacher.email === normalised
+      && isVerifiedTeacherProvider(teacher.provider)
+    ));
+    if (matches.length > 1) {
+      throw new Error("Teacher identity conflict for this email");
+    }
+    return matches[0] || null;
+  };
+
   const upsertTeacher = async (teacherInput) => {
     const requestedId = String(teacherInput && teacherInput.id || "").trim();
     const email = String(teacherInput && teacherInput.email || "").trim().toLowerCase();
     const byId = requestedId ? state.teachers[requestedId] : null;
-    // Only verified Google / magic-link sign-in may reclaim an existing email identity.
-    // Local/dev login must never open another teacher's portal by typing their email.
+    // Verified Google/magic may only link to an existing verified identity.
+    // Never merge into local/dev teachers (no mailbox proof).
     const mayLinkByEmail = teacherInput && teacherInput.linkByVerifiedEmail === true;
-    const byEmail = mayLinkByEmail ? findTeacherByEmail(email) : null;
-    if (byId && byEmail && byId.id !== byEmail.id) {
+    const byVerifiedEmail = mayLinkByEmail ? findUniqueVerifiedTeacherByEmail(email) : null;
+    if (byId && byVerifiedEmail && byId.id !== byVerifiedEmail.id) {
       throw new Error("Teacher identity conflict for this email");
     }
-    const existingTeacher = byId || byEmail;
+    if (byId && mayLinkByEmail && !isVerifiedTeacherProvider(byId.provider) && !byVerifiedEmail) {
+      // Requested ID points at a local/dev record; verified sign-in must not inherit it.
+      // Fall through to create/reuse a verified identity instead.
+    }
+    const existingTeacher = (
+      byId && (!mayLinkByEmail || isVerifiedTeacherProvider(byId.provider))
+    )
+      ? byId
+      : byVerifiedEmail;
     const teacher = sanitiseTeacher({
       ...existingTeacher,
       ...teacherInput,
@@ -676,7 +719,11 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     if (!teacher) throw new Error("Teacher not found");
     const requestedProfileId = String(input.credentialProfileId || "").trim();
     ensureEffectiveProfileSelection(teacher.id, requestedProfileId);
-    assertCredentialProfileReady(teacher.id, requestedProfileId);
+    const readyProfile = assertCredentialProfileReady(teacher.id, requestedProfileId);
+    const modelOverride = assertModelOverrideMatchesTestedProfile(
+      readyProfile,
+      input.modelOverride || ""
+    );
 
     const id = createClassroomId();
     const code = normaliseClassCode(input.code) || mintUniqueCode();
@@ -688,7 +735,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       name: input.name || "Classroom",
       code,
       credentialProfileId: requestedProfileId,
-      modelOverride: input.modelOverride || "",
+      modelOverride,
       enabled: input.enabled !== false,
       sessionVersion: 1,
       createdAt: new Date().toISOString(),
@@ -729,6 +776,16 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     if (profileChanged || becomingEnabled) {
       assertCredentialProfileReady(teacherId, nextCredentialProfileId);
     }
+    const effectiveProfile = getEffectiveCredentialProfileForTeacher(
+      teacherId,
+      nextCredentialProfileId
+    );
+    const nextModelOverride = input.modelOverride != null
+      ? input.modelOverride
+      : existing.modelOverride;
+    if (nextEnabled || input.modelOverride != null) {
+      assertModelOverrideMatchesTestedProfile(effectiveProfile, nextModelOverride);
+    }
     const codeChanged = nextCode !== existing.code;
     const becomingDisabled = existing.enabled && !nextEnabled;
     let nextVersion = existing.sessionVersion;
@@ -750,7 +807,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       name: input.name != null ? input.name : existing.name,
       code: nextCode,
       credentialProfileId: nextCredentialProfileId,
-      modelOverride: input.modelOverride != null ? input.modelOverride : existing.modelOverride,
+      modelOverride: nextModelOverride,
       enabled: nextEnabled,
       sessionVersion: nextVersion,
       updatedAt: new Date().toISOString()

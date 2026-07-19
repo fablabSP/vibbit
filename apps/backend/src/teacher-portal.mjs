@@ -665,8 +665,9 @@ function renderDashboardPage({
               </select>
             </label>
             <label>Model override (optional)
-              <input type="text" name="modelOverride" value="${escapeHtml(classroom.modelOverride || "")}" maxlength="160" placeholder="Leave blank to use the AI account default" />
+              <input type="text" name="modelOverride" value="${escapeHtml(classroom.modelOverride || "")}" maxlength="160" placeholder="Leave blank, or match the tested AI account model" />
             </label>
+            <p class="hint">Must match the tested AI account model, or leave blank.</p>
             <label class="row" style="display:flex;gap:0.5rem;align-items:center;">
               <input type="checkbox" name="enabled" value="1" ${classroom.enabled ? "checked" : ""} style="width:auto" />
               Classroom enabled
@@ -725,8 +726,9 @@ function renderDashboardPage({
               </select>
             </label>
             <label>Model override (optional)
-              <input type="text" name="modelOverride" value="" maxlength="160" placeholder="Leave blank to use the AI account default" />
+              <input type="text" name="modelOverride" value="" maxlength="160" placeholder="Leave blank, or match the tested AI account model" />
             </label>
+            <p class="hint">Must match the tested AI account model, or leave blank.</p>
             <div class="actions row">
               <button type="submit">Create classroom</button>
             </div>
