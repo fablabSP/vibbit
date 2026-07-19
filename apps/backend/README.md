@@ -4,16 +4,13 @@ Teacher-friendly backend for Vibbit managed mode.
 
 Teachers:
 
-1. Open `/teacher` and sign in (Google, or local/dev login)
-2. Enter an OpenAI-compatible API base URL + API key (+ model)
-3. Mint a classroom code
+1. Open `/teacher` and sign in (Google, magic link, or local/dev login)
+2. Connect an AI account (tested automatically before save)
+3. Create a classroom code
 
-Students enter:
+Students enter the classroom code (hosted package is code-only). Prefer the bookmarklet join flow unless school IT manages Chrome ZIP installs.
 
-- backend URL
-- classroom code
-
-The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured OpenAI-compatible endpoint (OpenAI, OpenRouter, Claude-compatible proxies, LiteLLM, etc.).
+The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured provider (OpenAI, OpenRouter, Gemini, or an allow-listed custom OpenAI-compatible gateway).
 
 ## Endpoints
 
@@ -37,13 +34,10 @@ The backend keeps provider API keys server-side and proxies generation requests 
 
 1. Open `/teacher`
 2. Sign in with Google (set `VIBBIT_GOOGLE_CLIENT_ID` + `VIBBIT_GOOGLE_CLIENT_SECRET`), or use local email login when `VIBBIT_TEACHER_DEV_LOGIN` is enabled (default `false`; set `true` for local dev when Google is unset)
-3. Add:
-   - API base URL (for example `https://api.openai.com/v1` or a LiteLLM URL like `http://localhost:4000/v1`)
-   - API key
-   - Model name
-4. Mint a classroom code and share the **classroom code** with students (shipped extension is code-only against the hosted server)
+3. Connect an AI account (provider + API key + model). New accounts are tested automatically; failed tests are not saved.
+4. Create a classroom and share the **classroom code** with students (shipped extension is code-only against the hosted server)
 
-Each teacher can mint multiple classrooms. Codes can be rotated or deleted from the portal.
+Each teacher can create multiple classrooms. Codes can be replaced or deleted from the portal. Untested or failed AI accounts cannot be used for new classrooms.
 
 ## Admin panel (operator)
 
@@ -160,14 +154,14 @@ Open `/teacher`, sign in with local/dev login, paste an OpenAI-compatible key + 
 
 ## LiteLLM and Claude-compatible endpoints
 
-Teachers can point the classroom API base URL at any OpenAI-compatible gateway:
+Teachers can point a custom AI account at an OpenAI-compatible gateway. Built-in providers (OpenAI, OpenRouter, Gemini) need no allow-list. Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`. Localhost or private HTTP gateways require self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`.
 
 | Provider / gateway | Example base URL |
 | --- | --- |
 | OpenAI | `https://api.openai.com/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
-| LiteLLM proxy | `http://localhost:4000/v1` |
-| Claude via OpenAI-compatible proxy | your proxy’s `/v1` URL |
+| LiteLLM proxy | `http://localhost:4000/v1` (self-hosted + private endpoints) |
+| Claude via OpenAI-compatible proxy | your proxy’s `/v1` URL (allow-listed if public) |
 
 Vibbit calls `{baseUrl}/chat/completions` with the teacher’s API key. You do not need to run LiteLLM inside this repo — point the classroom at an existing LiteLLM (or similar) deployment if you want multi-provider routing.
 

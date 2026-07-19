@@ -30,7 +30,7 @@ test("normaliseApiBaseUrl adds /v1 for OpenAI-compatible and LiteLLM roots", () 
   assert.equal(normaliseApiBaseUrl("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1");
 });
 
-test("teacher can sign in locally, create a credential profile, mint a classroom, and students can connect", async () => {
+test("teacher can sign in locally, test-and-save an AI account, create a classroom, and students can connect", async () => {
   const runtime = createClassroomRuntime();
 
   const login = await followTeacherForm(runtime, "/teacher/dev-login", {
@@ -40,18 +40,39 @@ test("teacher can sign in locally, create a credential profile, mint a classroom
   assert.equal(login.response.status, 303);
   assert.match(login.cookieHeader, /vibbit_teacher_session=/);
 
-  const createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
-    name: "School OpenAI",
-    provider: "openai",
-    apiKey: "sk-teacher-key",
-    defaultModel: "gpt-4o-mini",
-    makeDefault: "1"
-  }, login.cookieHeader);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.includes("api.openai.com")) {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "OK" } }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(url);
+  };
+
+  let createProfile;
+  try {
+    createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
+      name: "School OpenAI",
+      provider: "openai",
+      apiKey: "sk-teacher-key",
+      defaultModel: "gpt-4o-mini",
+      makeDefault: "1"
+    }, login.cookieHeader);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal(createProfile.response.status, 303);
+  assert.match(String(createProfile.response.headers.get("Location") || ""), /AI%20account%20tested/);
 
   const profile = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:teacher@school.edu")[0];
   assert.ok(profile);
   assert.equal(profile.name, "School OpenAI");
+  assert.equal(profile.lastTestOk, true);
 
   const mint = await followTeacherForm(runtime, "/teacher/classrooms", {
     name: "Period 3",
@@ -68,9 +89,10 @@ test("teacher can sign in locally, create a credential profile, mint a classroom
   assert.match(html, /AI accounts/);
   assert.match(html, /School OpenAI/);
   assert.match(html, /Period 3/);
-  assert.match(html, /Classroom code:/);
+  assert.match(html, /of 500 used today/);
+  assert.match(html, /Ready/);
   const codeMatch = html.match(/class="code code-lg">([A-Z]{5}-[A-Z]{5})</);
-  assert.ok(codeMatch, "expected minted classroom code in dashboard");
+  assert.ok(codeMatch, "expected classroom code in dashboard");
   const classCode = codeMatch[1].replace(/-/g, "");
 
   const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
@@ -84,9 +106,47 @@ test("teacher can sign in locally, create a credential profile, mint a classroom
   assert.equal(connect.status, 200);
   const connected = await connect.json();
   assert.equal(connected.ok, true);
-  assert.ok(connected.sessionToken);
+  assert.equal(typeof connected.sessionToken, "string");
+  assert.ok(connected.sessionToken.length > 0);
   assert.equal(connected.classroomName, "Period 3");
   assert.equal(connected.defaultModel, "gpt-4o-mini");
+});
+
+test("failed AI account test does not save a new profile", async () => {
+  const runtime = createClassroomRuntime();
+  const login = await followTeacherForm(runtime, "/teacher/dev-login", {
+    email: "teacher-fail@school.edu",
+    name: "Ms Fail"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("api.openai.com")) {
+      return new Response(JSON.stringify({ error: { message: "invalid key" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(url);
+  };
+
+  let createProfile;
+  try {
+    createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
+      name: "Broken key",
+      provider: "openai",
+      apiKey: "sk-bad",
+      defaultModel: "gpt-4o-mini",
+      makeDefault: "1"
+    }, login.cookieHeader);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(createProfile.response.status, 303);
+  assert.match(String(createProfile.response.headers.get("Location") || ""), /error=/);
+  const profiles = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:teacher-fail@school.edu");
+  assert.equal(profiles.length, 0);
 });
 
 test("legacy class code still connects when teacher classrooms exist", async () => {

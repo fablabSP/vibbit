@@ -160,15 +160,17 @@ export function renderJoinAvailablePage({
     ? `
       <ol>
         <li>Open a MakeCode project in your browser.</li>
-        <li>Install the <a href="${escapeHtml(extensionPath)}">Vibbit extension</a> or use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a>.</li>
+        <li>Use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> — easiest for most students (no Chrome install steps).</li>
         <li>Open Vibbit and enter the classroom code shown above.</li>
+        <li>Only use the Chrome ZIP if your teacher or IT has already set it up for you.</li>
       </ol>
     `
     : `
       <ol>
         <li>Open a MakeCode project in your browser.</li>
-        <li>Install the <a href="${escapeHtml(extensionPath)}">Vibbit extension</a> or use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a>.</li>
+        <li>Use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> — easiest for most students (no Chrome install steps).</li>
         <li>Choose <strong>Managed</strong>, then enter the server URL and classroom code shown above.</li>
+        <li>Only use the Chrome ZIP if your teacher or IT has already set it up for you.</li>
       </ol>
     `;
   const body = `
@@ -180,10 +182,11 @@ export function renderJoinAvailablePage({
     <div class="steps">
       <p><strong>How to connect</strong></p>
       ${steps}
+      <p>Chrome ZIP installs are technical and usually need a teacher or school IT helper. Prefer the bookmarklet unless your devices are centrally managed.</p>
     </div>
     <div class="links">
-      <a class="btn" href="${escapeHtml(extensionPath)}">Download extension</a>
       <a class="btn" href="${escapeHtml(bookmarkletPath)}">Get bookmarklet</a>
+      <a class="btn" href="${escapeHtml(extensionPath)}">Chrome ZIP (IT / teacher)</a>
     </div>
   `;
   return joinShell({ title: "Join classroom", body });

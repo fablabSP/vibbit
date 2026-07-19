@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CLASS_CODE_LENGTH,
+  createTeacherId,
   createTeacherPortalStore,
   formatClassCode,
   generateClassCode,
+  isCredentialProfileReady,
   normaliseApiBaseUrl,
   normaliseClassCode,
   sanitiseTeacherPortalState
@@ -181,4 +183,100 @@ test("updateCredentialProfile clears apiKey when provider changes and submitted 
   });
   assert.equal(updated.provider, "gemini");
   assert.equal(updated.apiKey, "");
+  assert.equal(updated.lastTestOk, null);
+});
+
+test("upsertTeacher links Google and magic-link identities by verified email", async () => {
+  const store = createTeacherPortalStore();
+  const googleId = createTeacherId("google", "google-sub-123");
+  const first = await store.upsertTeacher({
+    id: googleId,
+    email: "shared@school.edu",
+    name: "Ms Shared",
+    provider: "google"
+  });
+  assert.equal(first.id, googleId);
+
+  const magicId = createTeacherId("magic", "shared@school.edu");
+  const second = await store.upsertTeacher({
+    id: magicId,
+    email: "shared@school.edu",
+    name: "Ms Shared",
+    provider: "magic"
+  });
+  assert.equal(second.id, googleId);
+  assert.equal(second.provider, "google");
+  assert.equal(Object.keys(store.getState().teachers).length, 1);
+});
+
+test("createClassroom rejects untested or failed AI accounts", async () => {
+  const store = createTeacherPortalStore({
+    teachers: {
+      [teacherA.id]: {
+        ...teacherA,
+        defaultCredentialProfileId: "cp_untested"
+      }
+    },
+    credentialProfiles: {
+      cp_untested: {
+        id: "cp_untested",
+        teacherId: teacherA.id,
+        name: "Untested",
+        provider: "openai",
+        apiKey: "sk-untested",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      },
+      cp_failed: {
+        id: "cp_failed",
+        teacherId: teacherA.id,
+        name: "Failed",
+        provider: "openai",
+        apiKey: "sk-failed",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      },
+      cp_ready: {
+        id: "cp_ready",
+        teacherId: teacherA.id,
+        name: "Ready",
+        provider: "openai",
+        apiKey: "sk-ready",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  assert.equal(isCredentialProfileReady(store.getCredentialProfile("cp_untested")), false);
+  assert.equal(isCredentialProfileReady(store.getCredentialProfile("cp_failed")), false);
+  assert.equal(isCredentialProfileReady(store.getCredentialProfile("cp_ready")), true);
+
+  await assert.rejects(
+    () => store.createClassroom(teacherA.id, {
+      name: "Blocked",
+      credentialProfileId: "cp_untested"
+    }),
+    /Test the AI account successfully/
+  );
+  await assert.rejects(
+    () => store.createClassroom(teacherA.id, {
+      name: "Blocked failed",
+      credentialProfileId: "cp_failed"
+    }),
+    /Test the AI account successfully/
+  );
+
+  const classroom = await store.createClassroom(teacherA.id, {
+    name: "Allowed",
+    credentialProfileId: "cp_ready"
+  });
+  assert.equal(classroom.name, "Allowed");
+  assert.equal(classroom.credentialProfileId, "cp_ready");
 });

@@ -80,7 +80,8 @@ test("legacy classroom connect returns public server config fields", async () =>
   assert.equal(body.classCodeRequired, true);
   assert.equal(body.defaultProvider, "openai");
   assert.equal(body.defaultModel, "gpt-4o-mini");
-  assert.ok(body.sessionToken);
+  assert.equal(typeof body.sessionToken, "string");
+  assert.ok(body.sessionToken.length > 0);
   assert.equal(typeof body.defaultModelFor, "undefined");
   assert.equal(typeof body.apiKeyFor, "undefined");
 });

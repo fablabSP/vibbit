@@ -80,6 +80,14 @@ export function createTeacherId(provider, subject) {
   return `${safeProvider}:${safeSubject}`;
 }
 
+export function isCredentialProfileReady(profile) {
+  return Boolean(
+    profile
+    && String(profile.apiKey || "").trim()
+    && profile.lastTestOk === true
+  );
+}
+
 export function normaliseApiBaseUrl(value) {
   return normaliseOpenAiCompatibleBaseUrl(value);
 }
@@ -345,10 +353,33 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     await persistState(state);
   };
 
+  const findTeacherByEmail = (email) => {
+    const normalised = String(email || "").trim().toLowerCase();
+    if (!normalised) return null;
+    return Object.values(state.teachers).find((teacher) => teacher.email === normalised) || null;
+  };
+
   const upsertTeacher = async (teacherInput) => {
-    const existingTeacher = state.teachers[teacherInput && teacherInput.id];
+    const requestedId = String(teacherInput && teacherInput.id || "").trim();
+    const email = String(teacherInput && teacherInput.email || "").trim().toLowerCase();
+    const byId = requestedId ? state.teachers[requestedId] : null;
+    const byEmail = findTeacherByEmail(email);
+    // Same verified email through Google or magic link should reopen the same portal.
+    const existingTeacher = byId || byEmail;
     const teacher = sanitiseTeacher({
+      ...existingTeacher,
       ...teacherInput,
+      id: existingTeacher ? existingTeacher.id : requestedId,
+      email: email || (existingTeacher && existingTeacher.email) || "",
+      provider: existingTeacher
+        ? existingTeacher.provider
+        : (teacherInput && teacherInput.provider),
+      name: String(teacherInput && teacherInput.name || "").trim()
+        || (existingTeacher && existingTeacher.name)
+        || "",
+      picture: String(teacherInput && teacherInput.picture || "").trim()
+        || (existingTeacher && existingTeacher.picture)
+        || "",
       defaultCredentialProfileId: (
         teacherInput && teacherInput.defaultCredentialProfileId
       ) || (existingTeacher && existingTeacher.defaultCredentialProfileId) || "",
@@ -488,6 +519,17 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     };
   };
 
+  const assertCredentialProfileReady = (teacherId, profileId = "") => {
+    const profile = getEffectiveCredentialProfileForTeacher(teacherId, profileId);
+    if (!profile) {
+      throw new Error("Choose a tested AI account before creating a classroom");
+    }
+    if (!isCredentialProfileReady(profile)) {
+      throw new Error("Test the AI account successfully before using it in a classroom");
+    }
+    return profile;
+  };
+
   const createCredentialProfile = async (teacherId, input = {}) => {
     const teacher = getTeacher(teacherId);
     if (!teacher) throw new Error("Teacher not found");
@@ -501,7 +543,9 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       customBaseUrl: provider === "custom" ? input.customBaseUrl || "" : "",
       defaultModel: input.defaultModel || defaultModelForCredentialProvider(provider),
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      lastTestedAt: input.lastTestedAt || "",
+      lastTestOk: input.lastTestOk == null ? null : input.lastTestOk === true
     });
     if (!profile) throw new Error("Invalid credential profile");
     if (profile.provider === "custom" && !profile.customBaseUrl) {
@@ -534,20 +578,30 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     const provider = normaliseCredentialProvider(input.provider || existing.provider);
     const providerChanged = input.provider != null
       && normaliseCredentialProvider(input.provider) !== normaliseCredentialProvider(existing.provider);
+    const nextApiKey = input.apiKey != null && String(input.apiKey).trim()
+      ? String(input.apiKey).trim()
+      : (providerChanged ? "" : existing.apiKey);
+    const nextCustomBaseUrl = provider === "custom"
+      ? (input.customBaseUrl != null ? input.customBaseUrl : existing.customBaseUrl)
+      : "";
+    const apiKeyChanged = nextApiKey !== String(existing.apiKey || "");
+    const customUrlChanged = provider === "custom"
+      && normaliseApiBaseUrl(nextCustomBaseUrl) !== normaliseApiBaseUrl(existing.customBaseUrl || "");
+    const credentialsChanged = providerChanged || apiKeyChanged || customUrlChanged;
     const profile = sanitiseCredentialProfile({
       ...existing,
       name: input.name != null ? input.name : existing.name,
       provider,
-      apiKey: input.apiKey != null && String(input.apiKey).trim()
-        ? input.apiKey
-        : (providerChanged ? "" : existing.apiKey),
-      customBaseUrl: provider === "custom"
-        ? (input.customBaseUrl != null ? input.customBaseUrl : existing.customBaseUrl)
-        : "",
+      apiKey: nextApiKey,
+      customBaseUrl: nextCustomBaseUrl,
       defaultModel: input.defaultModel != null ? input.defaultModel : existing.defaultModel,
       updatedAt: new Date().toISOString(),
-      lastTestedAt: input.lastTestedAt != null ? input.lastTestedAt : existing.lastTestedAt,
-      lastTestOk: input.lastTestOk != null ? input.lastTestOk : existing.lastTestOk
+      lastTestedAt: input.lastTestedAt != null
+        ? input.lastTestedAt
+        : (credentialsChanged ? "" : existing.lastTestedAt),
+      lastTestOk: input.lastTestOk != null
+        ? input.lastTestOk
+        : (credentialsChanged ? null : existing.lastTestOk)
     });
     if (profile.provider === "custom" && !profile.customBaseUrl) {
       throw new Error("Custom provider requires a custom base URL");
@@ -597,6 +651,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     if (!teacher) throw new Error("Teacher not found");
     const requestedProfileId = String(input.credentialProfileId || "").trim();
     ensureEffectiveProfileSelection(teacher.id, requestedProfileId);
+    assertCredentialProfileReady(teacher.id, requestedProfileId);
 
     const id = createClassroomId();
     const code = normaliseClassCode(input.code) || mintUniqueCode();
@@ -640,6 +695,9 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       ? String(input.credentialProfileId || "").trim()
       : existing.credentialProfileId;
     ensureEffectiveProfileSelection(teacherId, nextCredentialProfileId);
+    if (nextCredentialProfileId !== existing.credentialProfileId) {
+      assertCredentialProfileReady(teacherId, nextCredentialProfileId);
+    }
 
     const nextEnabled = input.enabled != null
       ? (input.enabled !== false && input.enabled !== "false")
@@ -752,6 +810,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       customBaseUrl: profile.customBaseUrl,
       defaultModel: profile.defaultModel,
       hasApiKey: Boolean(profile.apiKey),
+      ready: isCredentialProfileReady(profile),
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
       lastTestedAt: profile.lastTestedAt,
@@ -762,6 +821,7 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
   return {
     getState: () => state,
     upsertTeacher,
+    findTeacherByEmail,
     getTeacher,
     getCredentialProfile,
     listCredentialProfilesForTeacher,

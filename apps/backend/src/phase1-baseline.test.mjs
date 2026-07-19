@@ -304,13 +304,30 @@ test("baseline: persisted teacher portal state stores credential profile apiKey 
   });
   assert.equal(login.response.status, 303);
 
-  const createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
-    name: "School OpenAI",
-    provider: "openai",
-    apiKey: "sk-teacher-plaintext-key",
-    defaultModel: "gpt-4o-mini",
-    makeDefault: "1"
-  }, login.cookieHeader);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("api.openai.com")) {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "OK" } }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(url, init);
+  };
+  let createProfile;
+  try {
+    createProfile = await followTeacherForm(runtime, "/teacher/profiles", {
+      name: "School OpenAI",
+      provider: "openai",
+      apiKey: "sk-teacher-plaintext-key",
+      defaultModel: "gpt-4o-mini",
+      makeDefault: "1"
+    }, login.cookieHeader);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal(createProfile.response.status, 303);
 
   const profile = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:teacher@school.edu")[0];

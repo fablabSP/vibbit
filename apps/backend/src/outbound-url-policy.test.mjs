@@ -229,16 +229,33 @@ test("integration: teacher profile create rejects loopback endpoint and accepts 
     /error=.*(https|IP%20literal|not%20allowed)/i
   );
 
-  const allowedMint = await followTeacherForm(runtime, "/teacher/profiles", {
-    name: "OpenAI profile",
-    provider: "openai",
-    apiKey: "sk-test",
-    defaultModel: "gpt-4o-mini"
-  }, login.cookieHeader);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes("api.openai.com")) {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "OK" } }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(url, init);
+  };
+  let allowedMint;
+  try {
+    allowedMint = await followTeacherForm(runtime, "/teacher/profiles", {
+      name: "OpenAI profile",
+      provider: "openai",
+      apiKey: "sk-test",
+      defaultModel: "gpt-4o-mini"
+    }, login.cookieHeader);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal(allowedMint.response.status, 303);
   assert.match(
     String(allowedMint.response.headers.get("location") || ""),
-    /notice=Credential%20profile%20created/
+    /notice=AI%20account%20tested%20and%20saved/
   );
 });
 

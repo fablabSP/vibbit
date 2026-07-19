@@ -40,6 +40,8 @@ const seededState = {
       apiKey: "sk-teacher-key",
       customBaseUrl: "",
       defaultModel: "gpt-4o-mini",
+      lastTestOk: true,
+      lastTestedAt: "2026-01-01T00:00:00.000Z",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z"
     }
@@ -104,7 +106,7 @@ test("authenticated teacher mutation with csrf succeeds", async () => {
     modelOverride: ""
   }, login.cookieHeader);
   assert.equal(mint.response.status, 303);
-  assert.match(mint.response.headers.get("location") || "", /notice=Classroom%20minted/);
+  assert.match(mint.response.headers.get("location") || "", /notice=Classroom%20created/);
 });
 
 test("/join/VALID shows classroom code", async () => {
