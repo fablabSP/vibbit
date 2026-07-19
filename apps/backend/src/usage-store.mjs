@@ -80,9 +80,12 @@ export function createUsageStore({
       });
     },
     async recordRateLimited(classroomId) {
-      return record(classroomId, (bucket) => {
-        bucket.rateLimited += 1;
-      });
+      // In-memory only. Rejected-generate floods must not rewrite encrypted state
+      // on every 429; checkpoint on the next bounded persist (connect/generate/upstream).
+      const bucket = ensureBucket(classroomId);
+      bucket.rateLimited += 1;
+      if (typeof persist === "function") dirty = true;
+      return bucket;
     },
     async recordUpstreamAttempt(classroomId, {
       success = false,

@@ -57,6 +57,7 @@ function createRateLimitRuntime({
   now,
   persistDailyUsage,
   loadDailyUsage,
+  persistUsageState,
   rateLimits
 } = {}) {
   return createBackendRuntime({
@@ -77,6 +78,7 @@ function createRateLimitRuntime({
     ...(typeof now === "function" ? { now } : {}),
     ...(typeof persistDailyUsage === "function" ? { persistDailyUsage } : {}),
     ...(typeof loadDailyUsage === "function" ? { loadDailyUsage } : {}),
+    ...(typeof persistUsageState === "function" ? { persistUsageState } : {}),
     ...(rateLimits ? { rateLimits } : {})
   });
 }
@@ -154,7 +156,7 @@ test("P1-06A: token bucket rejects after capacity with retryAfterSeconds >= 1 an
   assert.equal(bucket.take(1).ok, true);
 });
 
-test("P1-06A: connect IP limit returns 429 on the 11th request from the same IP", async () => {
+test("P1-06A: connect IP limit returns 429 after the configured per-IP allowance", async () => {
   const runtime = createRateLimitRuntime({
     env: {
       VIBBIT_RATE_CONNECT_PER_IP_PER_MIN: "10",
@@ -174,6 +176,24 @@ test("P1-06A: connect IP limit returns 429 on the 11th request from the same IP"
   assert.ok(Number(limited.headers.get("Retry-After")) >= 1);
 });
 
+test("default connect IP limit allows a 30-student same-IP class join burst", async () => {
+  const runtime = createRateLimitRuntime({
+    env: {
+      VIBBIT_RATE_CONNECT_GLOBAL_PER_MIN: "1000"
+    }
+  });
+  assert.equal(runtime.rateLimits.config.connectPerIpPerMinute, 60);
+
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    const response = await connectWithIp(runtime, "LEGACY", "203.0.113.40");
+    assert.notEqual(
+      response.status,
+      429,
+      `expected same-IP student ${attempt} to connect under the classroom default`
+    );
+  }
+});
+
 test("P1-06A: a different IP can still connect when one IP is rate limited", async () => {
   const runtime = createRateLimitRuntime({
     env: {
@@ -191,6 +211,55 @@ test("P1-06A: a different IP can still connect when one IP is rate limited", asy
 
   const otherIp = await connectWithIp(runtime, "LEGACY", "203.0.113.99");
   assert.notEqual(otherIp.status, 429);
+});
+
+test("generate 429s update in-memory rateLimited counter without persisting usage", async () => {
+  let persistCalls = 0;
+  const runtime = createRateLimitRuntime({
+    env: {
+      VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "1",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "100",
+      VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
+      VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
+    },
+    persistUsageState: async () => {
+      persistCalls += 1;
+    }
+  });
+
+  const connect = await connectWithCode(runtime, "RATEA");
+  assert.equal(connect.status, 200);
+  const { sessionToken } = await connect.json();
+  // Connect persists once; freeze the counter before rejected generates.
+  const persistsAfterConnect = persistCalls;
+  assert.ok(persistsAfterConnect >= 1);
+
+  let upstreamCalls = 0;
+  const restoreFetch = mockUpstreamFetch(async () => {
+    upstreamCalls += 1;
+    return mockGenerateResponse();
+  });
+
+  try {
+    const first = await generateWithSession(runtime, sessionToken);
+    assert.equal(first.status, 200);
+    const persistsAfterAccepted = persistCalls;
+    assert.ok(persistsAfterAccepted > persistsAfterConnect);
+
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const limited = await generateWithSession(runtime, sessionToken);
+      assert.equal(limited.status, 429);
+    }
+
+    assert.equal(persistCalls, persistsAfterAccepted, "rejected generates must not persist usage");
+    assert.equal(upstreamCalls, 1);
+    const usage = runtime.usageStore.getToday("cls_rate_a");
+    assert.equal(usage.rateLimited, 25);
+    assert.equal(usage.acceptedGenerations, 1);
+  } finally {
+    restoreFetch();
+  }
 });
 
 test("P1-06A: generate session limit returns 429 without calling upstream fetch", async () => {

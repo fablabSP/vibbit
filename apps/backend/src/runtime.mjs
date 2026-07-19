@@ -1963,6 +1963,8 @@ export function createBackendRuntime(options = {}) {
           classroomId
         });
         if (!reservation.ok) {
+          // In-memory counter only — do not persist rejected-generate metrics
+          // (that amplifies disk/crypto work under flood). Same posture as connect.
           await usageStore.recordRateLimited(classroomId || "legacy");
           return respondRateLimited(origin, reservation);
         }
@@ -2009,6 +2011,8 @@ export function createBackendRuntime(options = {}) {
     config: runtimeConfig,
     fetch: fetchHandler,
     teacherPortal,
+    rateLimits,
+    usageStore,
     getStartupInfo: (options) => {
       const listenUrl = options && options.listenUrl;
       return [

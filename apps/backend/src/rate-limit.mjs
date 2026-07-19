@@ -51,7 +51,8 @@ export function createTokenBucket({
 export function createRateLimitConfig(envInput = {}) {
   const env = envInput || {};
   return {
-    connectPerIpPerMinute: parseInteger(env.VIBBIT_RATE_CONNECT_PER_IP_PER_MIN, 10, { min: 1, max: 1000 }),
+    // Classroom NAT/proxy default: many students share one egress IP during setup.
+    connectPerIpPerMinute: parseInteger(env.VIBBIT_RATE_CONNECT_PER_IP_PER_MIN, 60, { min: 1, max: 1000 }),
     connectGlobalPerMinute: parseInteger(env.VIBBIT_RATE_CONNECT_GLOBAL_PER_MIN, 300, { min: 1, max: 100000 }),
     joinPerIpPerMinute: parseInteger(env.VIBBIT_RATE_JOIN_PER_IP_PER_MIN, 30, { min: 1, max: 1000 }),
     joinGlobalPerMinute: parseInteger(env.VIBBIT_RATE_JOIN_GLOBAL_PER_MIN, 600, { min: 1, max: 100000 }),

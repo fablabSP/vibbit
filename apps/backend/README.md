@@ -192,6 +192,14 @@ Hosted deployment (required):
 - `VIBBIT_PUBLIC_ORIGIN` (canonical HTTPS origin)
 - `VIBBIT_CREDENTIAL_ENCRYPTION_KEY` (32-byte base64/base64url)
 - `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST` (optional comma list for teacher custom gateways beyond built-in providers)
+- `VIBBIT_TRUST_PROXY=true` when the process sits behind Railway/nginx/Cloudflare (or similar), so per-IP connect limits use real client addresses instead of the proxy hop
+
+Rate limits (classroom-friendly defaults):
+
+- `VIBBIT_RATE_CONNECT_PER_IP_PER_MIN` (default `60`; sized for a NAT’d class joining together)
+- `VIBBIT_RATE_CONNECT_GLOBAL_PER_MIN` (default `300`)
+- `VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN` (default `6`)
+- `VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY` (default `500`)
 
 Classroom auth:
 
