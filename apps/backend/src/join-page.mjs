@@ -159,17 +159,17 @@ export function renderJoinAvailablePage({
   const steps = codeOnly
     ? `
       <ol>
+        <li>Install or save the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> first (easiest for most students — no Chrome install steps).</li>
         <li>Open a MakeCode project in your browser.</li>
-        <li>Use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> — easiest for most students (no Chrome install steps).</li>
-        <li>Open Vibbit and enter the classroom code shown above.</li>
+        <li>Click the bookmarklet, open Vibbit, and enter the classroom code shown above.</li>
         <li>Only use the Chrome ZIP if your teacher or IT has already set it up for you.</li>
       </ol>
     `
     : `
       <ol>
+        <li>Install or save the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> first (easiest for most students — no Chrome install steps).</li>
         <li>Open a MakeCode project in your browser.</li>
-        <li>Use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a> — easiest for most students (no Chrome install steps).</li>
-        <li>Choose <strong>Managed</strong>, then enter the server URL and classroom code shown above.</li>
+        <li>Click the bookmarklet, choose <strong>Managed</strong>, then enter the server URL and classroom code shown above.</li>
         <li>Only use the Chrome ZIP if your teacher or IT has already set it up for you.</li>
       </ol>
     `;

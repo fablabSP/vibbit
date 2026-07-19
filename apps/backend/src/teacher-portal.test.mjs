@@ -149,6 +149,144 @@ test("failed AI account test does not save a new profile", async () => {
   assert.equal(profiles.length, 0);
 });
 
+test("failed Test and save keeps a classroom-used ready AI account unchanged", async () => {
+  const runtime = createClassroomRuntime({
+    teachers: {
+      "local:teacher@school.edu": {
+        id: "local:teacher@school.edu",
+        email: "teacher@school.edu",
+        name: "Ms Tan",
+        provider: "local",
+        defaultCredentialProfileId: "cp_ready",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    credentialProfiles: {
+      cp_ready: {
+        id: "cp_ready",
+        teacherId: "local:teacher@school.edu",
+        name: "Working account",
+        provider: "openai",
+        apiKey: "sk-good",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: true,
+        lastTestedAt: "2026-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    classrooms: {
+      cls_live: {
+        id: "cls_live",
+        teacherId: "local:teacher@school.edu",
+        name: "Live class",
+        code: "LIVECLASS1",
+        credentialProfileId: "cp_ready",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  const login = await followTeacherForm(runtime, "/teacher/dev-login", {
+    email: "teacher@school.edu",
+    name: "Ms Tan"
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("api.openai.com")) {
+      return new Response(JSON.stringify({ error: { message: "invalid key" } }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(url);
+  };
+
+  let failedTest;
+  try {
+    failedTest = await followTeacherForm(runtime, "/teacher/profiles/cp_ready/test", {
+      name: "Working account",
+      provider: "openai",
+      apiKey: "sk-bad-replacement",
+      defaultModel: "gpt-4o-mini"
+    }, login.cookieHeader);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(failedTest.response.status, 303);
+  assert.match(String(failedTest.response.headers.get("Location") || ""), /error=/);
+
+  const profile = runtime.teacherPortal.store.getCredentialProfile("cp_ready");
+  assert.equal(profile.apiKey, "sk-good");
+  assert.equal(profile.lastTestOk, true);
+  assert.equal(profile.defaultModel, "gpt-4o-mini");
+
+  const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Vibbit-Class-Code": "LIVECLASS1"
+    },
+    body: JSON.stringify({ classCode: "LIVECLASS1" })
+  }));
+  assert.equal(connect.status, 200);
+});
+
+test("connect rejects classrooms whose AI account is untested", async () => {
+  const runtime = createClassroomRuntime({
+    teachers: {
+      "local:teacher@school.edu": {
+        id: "local:teacher@school.edu",
+        email: "teacher@school.edu",
+        name: "Ms Tan",
+        provider: "local",
+        createdAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    credentialProfiles: {
+      cp_untested: {
+        id: "cp_untested",
+        teacherId: "local:teacher@school.edu",
+        name: "Untested",
+        provider: "openai",
+        apiKey: "sk-untested",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    classrooms: {
+      cls_unready: {
+        id: "cls_unready",
+        teacherId: "local:teacher@school.edu",
+        name: "Unready",
+        code: "UNREADYCLS",
+        credentialProfileId: "cp_untested",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Vibbit-Class-Code": "UNREADYCLS"
+    },
+    body: JSON.stringify({ classCode: "UNREADYCLS" })
+  }));
+  assert.equal(connect.status, 503);
+  const body = await connect.json();
+  assert.match(String(body.error || ""), /test and save/i);
+});
+
 test("legacy class code still connects when teacher classrooms exist", async () => {
   const runtime = createClassroomRuntime();
   const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {

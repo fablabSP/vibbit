@@ -704,7 +704,7 @@ function renderDashboardPage({
     <div class="panel">
       <h2>How students connect</h2>
       <p>Share a classroom code (shown as <code>ABCDE-FGHIJ</code>). Students open Vibbit and enter only that code.</p>
-      <p class="hint">Prefer the bookmarklet join page for most students. Chrome ZIP installs usually need a teacher or IT helper.</p>
+      <p class="hint">Share the join page so students install the bookmarklet first, then open MakeCode. Chrome ZIP installs usually need a teacher or IT helper.</p>
     </div>
 
     <h2>Your classrooms</h2>
@@ -1113,7 +1113,7 @@ export function createTeacherPortal({
         const accessToken = String(tokenPayload.access_token || "").trim();
         if (!accessToken) throw new Error("Missing Google access token");
         const profile = await fetchGoogleUserInfo(accessToken);
-        if (profile.email_verified === false) {
+        if (profile.email_verified !== true) {
           throw new Error("Google account email is not verified");
         }
         const email = String(profile.email || "").trim().toLowerCase();
@@ -1125,7 +1125,8 @@ export function createTeacherPortal({
           email,
           name: String(profile.name || "").trim(),
           picture: String(profile.picture || "").trim(),
-          provider: "google"
+          provider: "google",
+          linkByVerifiedEmail: true
         });
         const sessionCookie = startTeacherSession(teacher, requestUrl);
         const secure = isSecureRequest(requestUrl);
@@ -1176,7 +1177,8 @@ export function createTeacherPortal({
         id: createTeacherId("magic", consumed.email),
         email: consumed.email,
         name: consumed.email.split("@")[0],
-        provider: "magic"
+        provider: "magic",
+        linkByVerifiedEmail: true
       });
       const sessionCookie = startTeacherSession(teacher, requestUrl);
       return redirectResponse("/teacher?notice=Signed%20in%20with%20email", {
@@ -1274,22 +1276,14 @@ export function createTeacherPortal({
               ? profileInput.apiKey
               : (providerChanged ? "" : existingProfile.apiKey)
           };
-          try {
-            await testCredentialProfileConnection(draftProfile, { outboundUrlPolicy });
-            await store.updateCredentialProfile(teacher.id, profileId, {
-              ...profileInput,
-              lastTestedAt: new Date().toISOString(),
-              lastTestOk: true
-            });
-            return redirectResponse("/teacher?notice=AI%20account%20tested%20and%20saved", { corsHeaders });
-          } catch (testError) {
-            await store.updateCredentialProfile(teacher.id, profileId, {
-              ...profileInput,
-              lastTestedAt: new Date().toISOString(),
-              lastTestOk: false
-            });
-            throw testError;
-          }
+          // Failed tests must not overwrite a working classroom config.
+          await testCredentialProfileConnection(draftProfile, { outboundUrlPolicy });
+          await store.updateCredentialProfile(teacher.id, profileId, {
+            ...profileInput,
+            lastTestedAt: new Date().toISOString(),
+            lastTestOk: true
+          });
+          return redirectResponse("/teacher?notice=AI%20account%20tested%20and%20saved", { corsHeaders });
         }
         await store.updateCredentialProfile(teacher.id, profileId, profileInput);
         return redirectResponse("/teacher?notice=Credential%20profile%20saved", { corsHeaders });

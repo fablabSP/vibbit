@@ -257,7 +257,15 @@ function migrateTeacherPortalState({ teachers, classrooms, credentialProfiles, r
           || nextClassroom.legacyModel
           || defaultModelForCredentialProvider(inferred.provider),
         createdAt: (existingProfile && existingProfile.createdAt) || nextClassroom.createdAt,
-        updatedAt: (existingProfile && existingProfile.updatedAt) || nextClassroom.updatedAt
+        updatedAt: (existingProfile && existingProfile.updatedAt) || nextClassroom.updatedAt,
+        // Previously working legacy classroom keys are treated as tested.
+        lastTestedAt: (existingProfile && existingProfile.lastTestedAt)
+          || nextClassroom.updatedAt
+          || nextClassroom.createdAt
+          || "",
+        lastTestOk: existingProfile && existingProfile.lastTestOk != null
+          ? existingProfile.lastTestOk
+          : true
       });
       if (mergedProfile) {
         nextProfiles[mergedProfile.id] = mergedProfile;
@@ -363,8 +371,13 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     const requestedId = String(teacherInput && teacherInput.id || "").trim();
     const email = String(teacherInput && teacherInput.email || "").trim().toLowerCase();
     const byId = requestedId ? state.teachers[requestedId] : null;
-    const byEmail = findTeacherByEmail(email);
-    // Same verified email through Google or magic link should reopen the same portal.
+    // Only verified Google / magic-link sign-in may reclaim an existing email identity.
+    // Local/dev login must never open another teacher's portal by typing their email.
+    const mayLinkByEmail = teacherInput && teacherInput.linkByVerifiedEmail === true;
+    const byEmail = mayLinkByEmail ? findTeacherByEmail(email) : null;
+    if (byId && byEmail && byId.id !== byEmail.id) {
+      throw new Error("Teacher identity conflict for this email");
+    }
     const existingTeacher = byId || byEmail;
     const teacher = sanitiseTeacher({
       ...existingTeacher,
@@ -553,6 +566,9 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     }
     const shouldBecomeDefault = input.makeDefault === true || input.makeDefault === "1"
       || !teacher.defaultCredentialProfileId;
+    if (shouldBecomeDefault && !isCredentialProfileReady(profile)) {
+      throw new Error("Test the AI account successfully before setting it as the default");
+    }
     const nextTeacher = shouldBecomeDefault
       ? { ...teacher, defaultCredentialProfileId: profile.id }
       : teacher;
@@ -584,29 +600,38 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     const nextCustomBaseUrl = provider === "custom"
       ? (input.customBaseUrl != null ? input.customBaseUrl : existing.customBaseUrl)
       : "";
+    const nextDefaultModel = input.defaultModel != null
+      ? String(input.defaultModel || "").trim()
+      : existing.defaultModel;
     const apiKeyChanged = nextApiKey !== String(existing.apiKey || "");
     const customUrlChanged = provider === "custom"
       && normaliseApiBaseUrl(nextCustomBaseUrl) !== normaliseApiBaseUrl(existing.customBaseUrl || "");
-    const credentialsChanged = providerChanged || apiKeyChanged || customUrlChanged;
+    const modelChanged = nextDefaultModel !== String(existing.defaultModel || "");
+    // Provider / key / custom URL / model form the tested tuple.
+    const testedTupleChanged = providerChanged || apiKeyChanged || customUrlChanged || modelChanged;
     const profile = sanitiseCredentialProfile({
       ...existing,
       name: input.name != null ? input.name : existing.name,
       provider,
       apiKey: nextApiKey,
       customBaseUrl: nextCustomBaseUrl,
-      defaultModel: input.defaultModel != null ? input.defaultModel : existing.defaultModel,
+      defaultModel: nextDefaultModel,
       updatedAt: new Date().toISOString(),
       lastTestedAt: input.lastTestedAt != null
         ? input.lastTestedAt
-        : (credentialsChanged ? "" : existing.lastTestedAt),
+        : (testedTupleChanged ? "" : existing.lastTestedAt),
       lastTestOk: input.lastTestOk != null
         ? input.lastTestOk
-        : (credentialsChanged ? null : existing.lastTestOk)
+        : (testedTupleChanged ? null : existing.lastTestOk)
     });
     if (profile.provider === "custom" && !profile.customBaseUrl) {
       throw new Error("Custom provider requires a custom base URL");
     }
-    const nextTeacher = input.makeDefault === true || input.makeDefault === "1"
+    const makeDefault = input.makeDefault === true || input.makeDefault === "1";
+    if (makeDefault && !isCredentialProfileReady(profile)) {
+      throw new Error("Test the AI account successfully before setting it as the default");
+    }
+    const nextTeacher = makeDefault
       ? { ...teacher, defaultCredentialProfileId: profile.id }
       : teacher;
     state = {
@@ -695,13 +720,15 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
       ? String(input.credentialProfileId || "").trim()
       : existing.credentialProfileId;
     ensureEffectiveProfileSelection(teacherId, nextCredentialProfileId);
-    if (nextCredentialProfileId !== existing.credentialProfileId) {
-      assertCredentialProfileReady(teacherId, nextCredentialProfileId);
-    }
 
     const nextEnabled = input.enabled != null
       ? (input.enabled !== false && input.enabled !== "false")
       : existing.enabled;
+    const profileChanged = nextCredentialProfileId !== existing.credentialProfileId;
+    const becomingEnabled = !existing.enabled && nextEnabled;
+    if (profileChanged || becomingEnabled) {
+      assertCredentialProfileReady(teacherId, nextCredentialProfileId);
+    }
     const codeChanged = nextCode !== existing.code;
     const becomingDisabled = existing.enabled && !nextEnabled;
     let nextVersion = existing.sessionVersion;

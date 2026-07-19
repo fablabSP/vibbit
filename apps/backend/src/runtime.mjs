@@ -1591,8 +1591,11 @@ export function createBackendRuntime(options = {}) {
     if (!profile) {
       throw Object.assign(new Error("Classroom is missing a credential profile"), { statusCode: 503 });
     }
-    if (!profile.apiKey) {
-      throw Object.assign(new Error("Classroom credential profile is missing an API key"), { statusCode: 503 });
+    if (!profile.apiKey || profile.lastTestOk !== true) {
+      throw Object.assign(
+        new Error("Classroom AI account is not ready. Ask your teacher to test and save it."),
+        { statusCode: 503 }
+      );
     }
     if (profile.provider === "custom") {
       try {
@@ -1655,9 +1658,9 @@ export function createBackendRuntime(options = {}) {
             error: "Classroom is not ready yet. Ask your teacher to choose a credential profile."
           }, origin, runtimeConfig);
         }
-        if (!effectiveProfile.apiKey) {
+        if (!effectiveProfile.apiKey || effectiveProfile.lastTestOk !== true) {
           return respondJson(503, {
-            error: "Classroom is not ready yet. Ask your teacher to save an API key in the credential profile."
+            error: "Classroom is not ready yet. Ask your teacher to test and save the AI account."
           }, origin, runtimeConfig);
         }
         classroomId = teacherClassroom.id;

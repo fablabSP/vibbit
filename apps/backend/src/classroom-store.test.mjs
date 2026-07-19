@@ -70,6 +70,7 @@ test("sanitiseTeacherPortalState migrates legacy classroom credentials into dete
   assert.equal(profile.customBaseUrl, normaliseApiBaseUrl("https://litellm.example/v1"));
   assert.equal(profile.apiKey, "sk-legacy");
   assert.equal(profile.defaultModel, "claude-sonnet");
+  assert.equal(profile.lastTestOk, true);
   assert.equal(teacher.defaultCredentialProfileId, profile.id);
 
   const again = sanitiseTeacherPortalState(migrated);
@@ -193,7 +194,8 @@ test("upsertTeacher links Google and magic-link identities by verified email", a
     id: googleId,
     email: "shared@school.edu",
     name: "Ms Shared",
-    provider: "google"
+    provider: "google",
+    linkByVerifiedEmail: true
   });
   assert.equal(first.id, googleId);
 
@@ -202,11 +204,35 @@ test("upsertTeacher links Google and magic-link identities by verified email", a
     id: magicId,
     email: "shared@school.edu",
     name: "Ms Shared",
-    provider: "magic"
+    provider: "magic",
+    linkByVerifiedEmail: true
   });
   assert.equal(second.id, googleId);
   assert.equal(second.provider, "google");
   assert.equal(Object.keys(store.getState().teachers).length, 1);
+});
+
+test("local/dev login does not open an existing verified teacher by email", async () => {
+  const store = createTeacherPortalStore();
+  const googleId = createTeacherId("google", "google-sub-999");
+  await store.upsertTeacher({
+    id: googleId,
+    email: "shared@school.edu",
+    name: "Ms Shared",
+    provider: "google",
+    linkByVerifiedEmail: true
+  });
+
+  const localId = createTeacherId("local", "shared@school.edu");
+  const localTeacher = await store.upsertTeacher({
+    id: localId,
+    email: "shared@school.edu",
+    name: "Local Impersonator",
+    provider: "local"
+  });
+  assert.equal(localTeacher.id, localId);
+  assert.equal(Object.keys(store.getState().teachers).length, 2);
+  assert.equal(store.getTeacher(googleId).name, "Ms Shared");
 });
 
 test("createClassroom rejects untested or failed AI accounts", async () => {
@@ -279,4 +305,77 @@ test("createClassroom rejects untested or failed AI accounts", async () => {
   });
   assert.equal(classroom.name, "Allowed");
   assert.equal(classroom.credentialProfileId, "cp_ready");
+});
+
+test("model change invalidates readiness and makeDefault requires a ready profile", async () => {
+  const store = createTeacherPortalStore({
+    teachers: {
+      [teacherA.id]: teacherA
+    },
+    credentialProfiles: {
+      cp_ready: {
+        id: "cp_ready",
+        teacherId: teacherA.id,
+        name: "Ready",
+        provider: "openai",
+        apiKey: "sk-ready",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: true,
+        lastTestedAt: "2026-01-01T00:00:00.000Z",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  const updated = await store.updateCredentialProfile(teacherA.id, "cp_ready", {
+    defaultModel: "gpt-4.1-mini"
+  });
+  assert.equal(updated.lastTestOk, null);
+  assert.equal(isCredentialProfileReady(updated), false);
+
+  await assert.rejects(
+    () => store.updateCredentialProfile(teacherA.id, "cp_ready", {
+      makeDefault: true
+    }),
+    /before setting it as the default/
+  );
+});
+
+test("enabling a classroom requires a ready AI account", async () => {
+  const store = createTeacherPortalStore({
+    teachers: {
+      [teacherA.id]: teacherA
+    },
+    credentialProfiles: {
+      cp_unready: {
+        id: "cp_unready",
+        teacherId: teacherA.id,
+        name: "Unready",
+        provider: "openai",
+        apiKey: "sk-unready",
+        defaultModel: "gpt-4o-mini",
+        lastTestOk: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    },
+    classrooms: {
+      cls_disabled: {
+        id: "cls_disabled",
+        teacherId: teacherA.id,
+        name: "Disabled",
+        code: "DISAB",
+        credentialProfileId: "cp_unready",
+        enabled: false,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z"
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => store.updateClassroom(teacherA.id, "cls_disabled", { enabled: true }),
+    /Test the AI account successfully/
+  );
 });
