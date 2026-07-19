@@ -26,12 +26,15 @@ const makecodeHostPermissions = [
 const userscriptHeaderPattern = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
 
 function overrideConst(source, name, value) {
-  const pattern = new RegExp(`const ${name} = ".*?";`);
-  if (!pattern.test(source)) {
-    throw new Error(`Could not find ${name} declaration in work.js`);
+  const stringPattern = new RegExp(`const ${name} = ".*?";`);
+  const boolPattern = new RegExp(`const ${name} = (?:true|false);`);
+  if (stringPattern.test(source)) {
+    return source.replace(stringPattern, `const ${name} = ${JSON.stringify(value)};`);
   }
-
-  return source.replace(pattern, `const ${name} = ${JSON.stringify(value)};`);
+  if (boolPattern.test(source)) {
+    return source.replace(boolPattern, `const ${name} = ${value === true ? "true" : "false"};`);
+  }
+  throw new Error(`Could not find ${name} declaration in work.js`);
 }
 
 function hostPermissionForBackend(backend) {
@@ -41,6 +44,20 @@ function hostPermissionForBackend(backend) {
 
 function svgToDataUri(svgMarkup) {
   return `data:image/svg+xml,${encodeURIComponent(svgMarkup.replace(/\s+/g, " ").trim())}`;
+}
+
+function parseBoolean(value, fallback) {
+  if (typeof value === "boolean") return value;
+  if (value == null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function readConstString(source, name) {
+  const match = source.match(new RegExp(`const ${name} = "(.*?)";`));
+  return match ? match[1] : "";
 }
 
 async function build() {
@@ -55,18 +72,47 @@ async function build() {
   builtClient = builtClient.replaceAll(frogDataUriToken, frogDataUri);
   const manifest = JSON.parse(rawManifest);
 
-  const backend = process.env.VIBBIT_BACKEND;
+  const buildProfile = String(process.env.VIBBIT_BUILD_PROFILE || "").trim().toLowerCase();
+  const hostedManagedProfile = buildProfile === "hosted-managed";
+  let backend = process.env.VIBBIT_BACKEND;
   const appToken = process.env.VIBBIT_APP_TOKEN;
 
-  if (backend) {
-    builtClient = overrideConst(builtClient, "BACKEND", backend);
-    const backendPermission = hostPermissionForBackend(backend);
-    // Preserve MakeCode host permissions for toolbar-click flow
-    manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...byokHostPermissions])];
+  if (hostedManagedProfile) {
+    if (!backend || !/^https:\/\//i.test(String(backend).trim())) {
+      throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed requires VIBBIT_BACKEND to be an https URL");
+    }
+    if (appToken) {
+      throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed rejects VIBBIT_APP_TOKEN");
+    }
+    backend = String(backend).trim();
   }
 
-  if (appToken !== undefined) {
+  // Ordinary builds stay dual-mode (Managed + BYOK). Code-only distribution requires an
+  // explicit profile or VIBBIT_HOSTED_MANAGED=true — never inherit a source-level true.
+  const hostedManagedEnabled = hostedManagedProfile
+    ? true
+    : parseBoolean(process.env.VIBBIT_HOSTED_MANAGED, false);
+  builtClient = overrideConst(builtClient, "HOSTED_MANAGED", hostedManagedEnabled);
+
+  if (backend) {
+    builtClient = overrideConst(builtClient, "BACKEND", String(backend).trim());
+  }
+
+  if (!hostedManagedEnabled && appToken !== undefined) {
     builtClient = overrideConst(builtClient, "APP_TOKEN", appToken);
+  } else if (hostedManagedEnabled) {
+    builtClient = overrideConst(builtClient, "APP_TOKEN", "");
+  }
+
+  const effectiveBackend = readConstString(builtClient, "BACKEND");
+  if (effectiveBackend) {
+    const backendPermission = hostPermissionForBackend(effectiveBackend);
+    const optionalByokPermissions = hostedManagedEnabled ? [] : byokHostPermissions;
+    manifest.host_permissions = [...new Set([
+      ...makecodeHostPermissions,
+      backendPermission,
+      ...optionalByokPermissions
+    ])];
   }
 
   await rm(distDir, { recursive: true, force: true });
@@ -92,11 +138,14 @@ async function build() {
   ]);
 
   console.log("Built Chrome extension files in dist/");
-  if (backend) {
-    console.log(`- BACKEND overridden via VIBBIT_BACKEND: ${backend}`);
-    console.log(`- host_permissions set to: ${manifest.host_permissions[0]}`);
+  if (hostedManagedEnabled) {
+    console.log("- HOSTED_MANAGED enabled (code-only Managed against baked BACKEND)");
   }
-  if (appToken !== undefined) {
+  if (effectiveBackend) {
+    console.log(`- BACKEND: ${effectiveBackend}`);
+    console.log(`- host_permissions: ${manifest.host_permissions.join(", ")}`);
+  }
+  if (!hostedManagedEnabled && appToken !== undefined) {
     console.log("- APP_TOKEN overridden via VIBBIT_APP_TOKEN");
   }
 }

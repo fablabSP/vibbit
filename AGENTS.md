@@ -19,15 +19,17 @@ This repository ships one school-facing runtime that supports both:
 
 Use this exact flow when asked to prepare a testable build:
 
-1. Build:
+1. Neutral dual-mode build (Managed + BYOK):
    - `npm run build`
-2. Package:
-   - `npm run package`
+2. Production code-only package (hosted Managed against `https://vibbit.tk.sg`):
+   - `npm run package` (uses `VIBBIT_BUILD_PROFILE=hosted-managed`)
 3. Verify outputs:
    - `dist/content-script.js`
    - `dist/manifest.json`
    - `artifacts/vibbit-extension.zip`
 4. For local browser testing, load unpacked from `dist/` at `chrome://extensions`.
+   - Neutral: `npm run build` then load `dist/`
+   - Hosted/code-only: `npm run build:hosted` or `npm run package` then load `dist/`
 
 ## Bookmarklet build flow
 
@@ -49,13 +51,15 @@ Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet link
 ### Managed mode
 
 - Classroom auth flow:
-  - Students enter backend URL + class code in Vibbit
+  - Teachers sign in at `{BACKEND}/teacher`, save an OpenAI-compatible API key + base URL, and mint a classroom code
+  - Students enter the classroom code in Vibbit (hosted/code-only builds bake the server URL; self-hosted builds may still show a server field)
   - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
-  - Generation uses that session token on `POST {BACKEND}/vibbit/generate`
+  - Generation uses that session token on `POST {BACKEND}/vibbit/generate` (routed with the classroom's key/URL)
 - Endpoints:
   - `GET {BACKEND}/` (informational landing page)
   - `GET {BACKEND}/healthz`
-  - `GET {BACKEND}/admin` (`?code=<CLASSCODE>` in classroom mode)
+  - `GET {BACKEND}/teacher` (teacher portal)
+  - `GET {BACKEND}/admin` (`?admin=<ADMINTOKEN>` operator panel)
   - `GET {BACKEND}/admin/status`
   - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
@@ -91,7 +95,8 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 - Start backend: `npm run backend:start`
 - Dev backend (watch): `npm run backend:dev`
 - Backend env template: `apps/backend/.env.example`
-- Admin panel can save provider keys/models without env vars (persisted via `VIBBIT_STATE_FILE`) and is protected by an admin token (`/admin?admin=...`)
+- Teacher portal (`/teacher`) lets teachers mint classroom codes with their own OpenAI-compatible key + base URL (Google OAuth or local/dev login)
+- Admin panel can save shared fallback provider keys/models without env vars (persisted via `VIBBIT_STATE_FILE`) and is protected by an admin token (`/admin?admin=...`)
 
 ## Deploying the managed backend
 

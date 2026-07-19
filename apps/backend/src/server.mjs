@@ -3,18 +3,26 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createBackendRuntime } from "./runtime.mjs";
+import { sanitiseTeacherPortalState } from "./classroom-store.mjs";
+import { ADAPTER_CLIENT_IP_HEADER } from "./deployment-policy.mjs";
+import { createStateCodec } from "./state-codec.mjs";
+import { sanitiseUsageState } from "./usage-store.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_FILE = resolve(process.env.VIBBIT_STATE_FILE || ".vibbit-backend-state.json");
+const STATE_SCHEMA_VERSION = 4;
 
 function readStateFile(filePath) {
   try {
     const raw = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed;
-  } catch {
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    throw new Error("State file did not contain a JSON object");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return {};
+    const message = error && error.message ? error.message : "Unable to read state file";
+    throw new Error(`Refusing to start: ${message}`);
   }
-  return {};
 }
 
 function writeStateFile(filePath, state) {
@@ -29,33 +37,133 @@ function createAdminAuthToken() {
   return "vba_" + randomBytes(24).toString("base64url");
 }
 
-let persistedState = readStateFile(STATE_FILE);
+const stateCodec = createStateCodec(process.env);
+if (!stateCodec.secretBox.hasKey) {
+  console.warn(
+    "[Vibbit backend] WARNING: VIBBIT_CREDENTIAL_ENCRYPTION_KEY is unset; "
+    + "teacher/admin API keys will be stored as plaintext. Set a 32-byte base64 key for production."
+  );
+}
+
+let persistedState;
+try {
+  persistedState = readStateFile(STATE_FILE);
+} catch (error) {
+  console.error(`[Vibbit backend] ${error.message || error}`);
+  process.exit(1);
+}
 const envAdminAuthToken = String(process.env.VIBBIT_ADMIN_TOKEN || "").trim();
 let adminAuthToken = envAdminAuthToken || String(persistedState.adminAuthToken || "").trim();
 if (!adminAuthToken) {
   adminAuthToken = createAdminAuthToken();
-  persistedState = {
-    ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-    version: 1,
+}
+
+const rawTeacherPortalState = persistedState.teacherPortalState || {
+  teachers: persistedState.teachers,
+  classrooms: persistedState.classrooms
+};
+const rawAdminProviderState = persistedState.adminProviderState || {};
+
+let teacherPortalState;
+let adminProviderState;
+try {
+  teacherPortalState = sanitiseTeacherPortalState(
+    stateCodec.decryptTeacherPortalState(rawTeacherPortalState)
+  );
+  adminProviderState = stateCodec.decryptAdminProviderState(rawAdminProviderState);
+} catch (error) {
+  const message = error && error.message ? error.message : "Failed to decrypt persisted state";
+  console.error(`[Vibbit backend] ${message}`);
+  console.error("[Vibbit backend] Refusing to start without rewriting corrupted or undecryptable state.");
+  process.exit(1);
+}
+
+let usageState = sanitiseUsageState(persistedState.usageState || {});
+let dailyUsage = persistedState.dailyUsage && typeof persistedState.dailyUsage === "object"
+  ? persistedState.dailyUsage
+  : {};
+
+function buildPersistedSnapshot({
+  nextAdminProviderState = adminProviderState,
+  nextTeacherPortalState = teacherPortalState,
+  nextUsageState = usageState,
+  nextDailyUsage = dailyUsage
+} = {}) {
+  return {
+    version: STATE_SCHEMA_VERSION,
     updatedAt: new Date().toISOString(),
-    adminAuthToken
+    adminAuthToken,
+    adminProviderState: stateCodec.encryptAdminProviderState(nextAdminProviderState),
+    teacherPortalState: stateCodec.encryptTeacherPortalState(
+      sanitiseTeacherPortalState(nextTeacherPortalState)
+    ),
+    usageState: sanitiseUsageState(nextUsageState),
+    dailyUsage: nextDailyUsage && typeof nextDailyUsage === "object" ? nextDailyUsage : {}
   };
-  writeStateFile(STATE_FILE, persistedState);
+}
+
+function persistSnapshot(snapshot) {
+  writeStateFile(STATE_FILE, snapshot);
+  persistedState = snapshot;
+}
+
+// Eager migration: rewrite plaintext credentials when an encryption key is configured.
+const needsMigration = stateCodec.secretBox.hasKey && (
+  stateCodec.teacherPortalNeedsMigration(rawTeacherPortalState)
+  || stateCodec.adminProviderNeedsMigration(rawAdminProviderState)
+  || Number(persistedState.version || 0) < STATE_SCHEMA_VERSION
+  || !persistedState.adminAuthToken
+);
+
+if (needsMigration || !persistedState.adminAuthToken) {
+  try {
+    persistSnapshot(buildPersistedSnapshot());
+  } catch (error) {
+    const message = error && error.message ? error.message : "Failed to migrate state file";
+    console.error(`[Vibbit backend] ${message}`);
+    process.exit(1);
+  }
 }
 
 const runtime = createBackendRuntime({
   env: process.env,
   adminAuthToken,
-  adminProviderState: persistedState.adminProviderState || {},
+  adminProviderState,
+  teacherPortalState,
+  usageState,
   persistAdminProviderState: async (nextAdminProviderState) => {
-    persistedState = {
-      ...(persistedState && typeof persistedState === "object" ? persistedState : {}),
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      adminAuthToken,
-      adminProviderState: nextAdminProviderState
-    };
-    writeStateFile(STATE_FILE, persistedState);
+    adminProviderState = nextAdminProviderState;
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState,
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState
+    }));
+  },
+  persistTeacherPortalState: async (nextTeacherPortalState) => {
+    teacherPortalState = nextTeacherPortalState;
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState,
+      nextUsageState: usageState
+    }));
+  },
+  persistUsageState: async (nextUsageState) => {
+    usageState = sanitiseUsageState(nextUsageState);
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState
+    }));
+  },
+  loadDailyUsage: () => dailyUsage,
+  persistDailyUsage: async (snapshot) => {
+    dailyUsage = snapshot && typeof snapshot === "object" ? snapshot : {};
+    persistSnapshot(buildPersistedSnapshot({
+      nextAdminProviderState: adminProviderState,
+      nextTeacherPortalState: teacherPortalState,
+      nextUsageState: usageState,
+      nextDailyUsage: dailyUsage
+    }));
   }
 });
 
@@ -77,6 +185,7 @@ function toFetchRequest(req) {
 
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
+    if (String(key).toLowerCase() === ADAPTER_CLIENT_IP_HEADER) continue;
     if (Array.isArray(value)) {
       for (const item of value) {
         if (item != null) headers.append(key, item);
@@ -85,6 +194,11 @@ function toFetchRequest(req) {
     }
     if (value != null) headers.set(key, value);
   }
+
+  const peer = req.socket && req.socket.remoteAddress
+    ? String(req.socket.remoteAddress).trim()
+    : "";
+  if (peer) headers.set(ADAPTER_CLIENT_IP_HEADER, peer);
 
   const method = (req.method || "GET").toUpperCase();
   const init = { method, headers };
@@ -98,9 +212,21 @@ function toFetchRequest(req) {
 
 async function sendFetchResponse(res, response) {
   res.statusCode = response.status;
+  const setCookieValues = typeof response.headers.getSetCookie === "function"
+    ? response.headers.getSetCookie()
+    : [];
+
   response.headers.forEach((value, key) => {
+    if (String(key).toLowerCase() === "set-cookie") return;
     res.setHeader(key, value);
   });
+
+  if (setCookieValues.length) {
+    res.setHeader("Set-Cookie", setCookieValues);
+  } else {
+    const single = response.headers.get("set-cookie");
+    if (single) res.setHeader("Set-Cookie", single);
+  }
 
   if (!response.body) {
     res.end();
@@ -127,6 +253,11 @@ server.listen(PORT, () => {
   const listenUrl = `http://localhost:${PORT}`;
   const lines = runtime.getStartupInfo({ listenUrl });
   for (const line of lines) console.log(line);
-  console.log(`[Vibbit backend] Admin panel -> URL: ${listenUrl}/admin?admin=${adminAuthToken}`);
+  if (runtime.config.deployment && runtime.config.deployment.adminPanelEnabled) {
+    console.log(`[Vibbit backend] Admin panel -> ${listenUrl}/admin (supply VIBBIT_ADMIN_TOKEN via the environment; token is not printed)`);
+  }
   console.log(`[Vibbit backend] State file=${STATE_FILE}`);
+  console.log(
+    `[Vibbit backend] Credential encryption=${stateCodec.secretBox.hasKey ? "enabled" : "disabled"}`
+  );
 });

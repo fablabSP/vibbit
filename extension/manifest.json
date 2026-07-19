@@ -30,7 +30,7 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://vibbit.dev.tk.sg/*",
+    "https://vibbit.tk.sg/*",
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://openrouter.ai/*",

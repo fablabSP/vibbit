@@ -8,13 +8,11 @@ This repo ships one Vibbit runtime supporting both:
 ## Managed classroom flow
 
 1. Teacher runs or deploys the backend (`apps/backend/`).
-2. Teacher shares only:
-   - server URL
-   - class code
-3. Teacher can inspect backend status at `/admin` (using `/admin?admin=<ADMINTOKEN>`).
-4. Students open Vibbit in MakeCode, choose `Managed`, and enter URL + class code.
+2. Teacher opens `/teacher`, signs in (Google or local/dev login), and saves an OpenAI-compatible API base URL + key.
+3. Teacher creates a classroom and shares the 10-letter code (shown as `ABCDE-FGHIJ`, optionally via `/join/CODE`).
+4. Students open Vibbit in MakeCode and enter the classroom code. The production package (`npm run package`) is code-only against `https://vibbit.tk.sg`; ordinary `npm run build` keeps Managed + BYOK.
 5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
-6. Provider keys stay on the server.
+6. Provider keys stay on the server (per classroom). Optional operator panel: `/admin?admin=<ADMINTOKEN>`.
 
 ## Supported keys and endpoints
 
@@ -24,13 +22,15 @@ This repo ships one Vibbit runtime supporting both:
   - `POST {BACKEND}/vibbit/generate`
 - Session bootstrap endpoint:
   - `POST {BACKEND}/vibbit/connect`
-- Admin endpoints:
+- Teacher / admin endpoints:
   - `GET {BACKEND}/` (informational landing page)
+  - `GET {BACKEND}/teacher` (teacher login + mint classroom codes)
   - `GET {BACKEND}/admin`
   - `GET {BACKEND}/admin/status`
   - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
+- Teacher classrooms accept OpenAI, OpenRouter, Gemini, or a custom OpenAI-compatible base URL (LiteLLM / Claude-compatible proxies). Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`; localhost/private gateways need self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`. The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
   - optional managed overrides: `provider`, `model`
@@ -172,7 +172,7 @@ Default local URL:
 
 - `http://localhost:8787`
 
-On start, backend logs the classroom share line (URL + class code) and the admin URL (`/admin?admin=...`).
+On start, backend logs the classroom share line and admin path. Supply `VIBBIT_ADMIN_TOKEN` through the environment; the token is not printed.
 
 If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and configure them in the Provider Setup form.
 
@@ -195,7 +195,7 @@ Recommended teacher flow:
 1. Open [Railway New Project](https://railway.com/new) and deploy from GitHub.
 2. Set service root directory to `apps/backend`.
 3. Add required env vars from `apps/backend/.env.example`.
-4. Generate a public domain and share URL + class code.
+4. Generate a public domain, mint a classroom code, and share the code (hosted extension students need only the code).
 
 Cheapest hosted option:
 
@@ -226,13 +226,13 @@ Then:
    - `dist/content-script.js`
    - `dist/manifest.json`
    - `artifacts/vibbit-extension.zip`
-3. Managed checks:
-   - enter server URL + class code
+3. Managed checks after `npm run package` (hosted/code-only):
+   - enter classroom code only (server URL hidden; baked `https://vibbit.tk.sg`)
    - generate and verify paste + `Revert`
    - test error-aware flow (empty prompt + page errors)
    - trigger conversion modal and verify retry + `Fix convert error`
-4. BYOK checks:
-   - provider + model + key
+4. BYOK checks after `npm run build` (neutral dual-mode):
+   - mode toggle, provider + model + key
    - generation, paste, and error-context fixing
 5. Reload extension and refresh MakeCode tabs after each build
 

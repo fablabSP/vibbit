@@ -1,4 +1,5 @@
-const BACKEND = "https://vibbit.dev.tk.sg";
+const BACKEND = "https://vibbit.tk.sg";
+const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {
@@ -43,8 +44,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_TARGET = "__vibbit_target";
   const STORAGE_CHAT_HISTORY = "__vibbit_chat_history_v1";
   const STORAGE_CLASS_CODE = "__vibbit_class_code";
+  const STORAGE_CLASSROOM_NAME = "__vibbit_classroom_name";
   const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
   const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
+  const CLASS_CODE_LENGTH = 10;
 
   const MODEL_PRESETS = {
     openai: [
@@ -102,9 +105,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
     ? window.__vibbitBookmarkletConfig
     : {};
+  const hostedManaged = HOSTED_MANAGED === true || bookmarkletConfig.hostedManaged === true;
   const launchPanelOnLoad = bookmarkletConfig.__launchPanelOnLoad === true;
-  const enableManagedMode = bookmarkletConfig.enableManaged !== false;
-  const enableByokMode = bookmarkletConfig.enableByok !== false;
+  const enableManagedMode = hostedManaged || bookmarkletConfig.enableManaged !== false;
+  const enableByokMode = hostedManaged ? false : bookmarkletConfig.enableByok !== false;
   const configuredForceMode = String(bookmarkletConfig.forceMode || "").trim().toLowerCase();
   const modeFlags = {
     managed: enableManagedMode,
@@ -115,7 +119,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     modeFlags[configuredForceMode] = true;
   }
   const fallbackMode = modeFlags.managed ? "managed" : "byok";
-  const forceMode = modeFlags[configuredForceMode] ? configuredForceMode : "";
+  const forceMode = hostedManaged
+    ? "managed"
+    : (modeFlags[configuredForceMode] ? configuredForceMode : "");
   const coerceMode = (value) => {
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "managed" && modeFlags.managed) return "managed";
@@ -208,15 +214,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* Managed: server URL */
     + '  <div id="setup-managed-server" style="display:none">'
-    + '    <div style="display:grid;gap:4px">'
+    + '    <div id="setup-managed-server-url" style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Class Code</div>'
-    + '      <input id="setup-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <input id="setup-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
+
+    + '  <div id="setup-error" style="display:none;margin-top:4px;font-size:12px;color:#fca5a5;line-height:1.35"></div>'
 
     /* get started */
     + '  <button id="setup-go" style="' + S_BTN_PRIMARY + ';margin-top:4px">Get Started</button>'
@@ -230,6 +238,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '<div id="h-main" style="display:flex;align-items:center;padding:12px 16px;background:#111936;border-bottom:1px solid #21304f;flex-shrink:0">'
     + '  <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-right:8px">' + MAIN_HEADER_FROG_MARK + '</span>'
     + '  <span style="font-weight:600;font-size:14px">Vibbit</span>'
+    + '  <span id="classroom-badge" style="display:none;margin-left:8px;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#9bb1dd;font-weight:500"></span>'
     + '  <span id="busy-indicator" aria-hidden="true" style="margin-left:8px;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;opacity:0;visibility:hidden;transition:opacity .15s ease;">'
     + '    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#9bb1dd" stroke-width="1.5" style="animation:vibbit-spin .9s linear infinite">'
     + '      <circle cx="7" cy="7" r="5" stroke-opacity=".25"></circle>'
@@ -311,13 +320,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* Managed: server URL */
     + '  <div id="set-managed-server" style="display:none">'
-    + '    <div style="display:grid;gap:4px">'
+    + '    <div id="set-managed-server-url" style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Class Code</div>'
-    + '      <input id="set-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <input id="set-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
 
@@ -461,15 +470,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupKey = $("#setup-key");
   const setupServer = $("#setup-server");
   const setupClassCode = $("#setup-class-code");
+  const setupError = $("#setup-error");
   const setupByokProvider = $("#setup-byok-provider");
   const setupByokModel = $("#setup-byok-model");
   const setupByokKey = $("#setup-byok-key");
   const setupManagedServer = $("#setup-managed-server");
+  const setupManagedServerUrl = $("#setup-managed-server-url");
   const setupModeRow = $("#setup-mode-row");
   const setupGo = $("#setup-go");
 
   /* main view refs */
   const statusEl = $("#status");
+  const classroomBadge = $("#classroom-badge");
   const busyIndicator = $("#busy-indicator");
   const gearBtn = $("#gear");
   const promptEl = $("#p");
@@ -503,6 +515,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setByokModel = $("#set-byok-model");
   const setByokKey = $("#set-byok-key");
   const setManagedServer = $("#set-managed-server");
+  const setManagedServerUrl = $("#set-managed-server-url");
   const setModeRow = $("#set-mode-row");
   const saveBtn = $("#save");
   const backBtn = $("#back");
@@ -540,20 +553,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     refs.byokModel.style.display = isByok ? "grid" : "none";
     refs.byokKey.style.display = isByok ? "grid" : "none";
     refs.managedServer.style.display = isByok ? "none" : "grid";
+    if (refs.managedServerUrl) {
+      refs.managedServerUrl.style.display = hostedManaged ? "none" : "grid";
+    }
   };
 
   const setupModeRefs = {
     byokProvider: setupByokProvider,
     byokModel: setupByokModel,
     byokKey: setupByokKey,
-    managedServer: setupManagedServer
+    managedServer: setupManagedServer,
+    managedServerUrl: setupManagedServerUrl
   };
 
   const settingsModeRefs = {
     byokProvider: setByokProvider,
     byokModel: setByokModel,
     byokKey: setByokKey,
-    managedServer: setManagedServer
+    managedServer: setManagedServer,
+    managedServerUrl: setManagedServerUrl
   };
 
   const filterModeOptions = (selectEl) => {
@@ -574,7 +592,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   filterModeOptions(setupMode);
   filterModeOptions(setMode);
-  const showModePicker = modeFlags.byok && modeFlags.managed;
+  const showModePicker = !hostedManaged && modeFlags.byok && modeFlags.managed;
   if (setupModeRow) setupModeRow.style.display = showModePicker ? "grid" : "none";
   if (setModeRow) setModeRow.style.display = showModePicker ? "grid" : "none";
 
@@ -1166,15 +1184,38 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const DEFAULT_SERVER = BACKEND.replace(/\/+$/, "");
   const MANAGED_SESSION_REFRESH_BUFFER_MS = 15000;
 
+  const clearManagedSession = () => {
+    storageRemove(STORAGE_MANAGED_SESSION);
+    storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  };
+
   const normaliseClassCode = (value) => String(value || "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z]/g, "")
-    .slice(0, 5);
+    .slice(0, CLASS_CODE_LENGTH);
 
-  const clearManagedSession = () => {
-    storageRemove(STORAGE_MANAGED_SESSION);
-    storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  const formatClassCodeInput = (value) => {
+    const code = normaliseClassCode(value);
+    if (code.length > 5) return code.slice(0, 5) + "-" + code.slice(5);
+    return code;
+  };
+
+  const setClassroomName = (value) => {
+    const name = String(value || "").trim().slice(0, 120);
+    if (name) storageSet(STORAGE_CLASSROOM_NAME, name);
+    else storageRemove(STORAGE_CLASSROOM_NAME);
+    if (classroomBadge) {
+      if (name) {
+        classroomBadge.style.display = "inline";
+        classroomBadge.textContent = name;
+        classroomBadge.title = "Connected to " + name;
+      } else {
+        classroomBadge.style.display = "none";
+        classroomBadge.textContent = "";
+        classroomBadge.title = "";
+      }
+    }
   };
 
   const getStoredClassCode = () => normaliseClassCode(storageGet(STORAGE_CLASS_CODE) || "");
@@ -1184,6 +1225,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (normalized) storageSet(STORAGE_CLASS_CODE, normalized);
     else storageRemove(STORAGE_CLASS_CODE);
     clearManagedSession();
+    setClassroomName("");
     return normalized;
   };
 
@@ -1251,6 +1293,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const getBackendUrl = () => {
+    if (hostedManaged) return normaliseServerUrl(BACKEND) || BACKEND;
     const configured = normaliseServerUrl(storageGet(STORAGE_SERVER));
     if (configured) return configured;
     return normaliseServerUrl(BACKEND) || BACKEND;
@@ -1272,7 +1315,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setupModel, savedProvider, savedModel);
   setupKey.value = savedKey;
   setupServer.value = savedServer || DEFAULT_SERVER;
-  setupClassCode.value = savedClassCode;
+  setupClassCode.value = formatClassCodeInput(savedClassCode);
   applySetupMode();
 
   /* hydrate settings view */
@@ -1281,9 +1324,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setModel, savedProvider, savedModel);
   setKey.value = savedKey;
   setServer.value = savedServer || DEFAULT_SERVER;
-  setClassCode.value = savedClassCode;
+  setClassCode.value = formatClassCodeInput(savedClassCode);
   setTarget.value = savedTarget;
   applySettingsMode();
+  setClassroomName(storageGet(STORAGE_CLASSROOM_NAME) || "");
 
   /* show correct initial view */
   showView(setupDone ? "main" : "setup");
@@ -1300,14 +1344,27 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
 
+  const showSetupError = (message) => {
+    if (!setupError) return;
+    const text = String(message || "").trim();
+    if (!text) {
+      setupError.style.display = "none";
+      setupError.textContent = "";
+      return;
+    }
+    setupError.style.display = "block";
+    setupError.textContent = text;
+  };
+
   setupClassCode.onchange = () => {
-    setupClassCode.value = normaliseClassCode(setupClassCode.value);
+    setupClassCode.value = formatClassCodeInput(setupClassCode.value);
   };
   setupClassCode.oninput = setupClassCode.onchange;
 
-  setupGo.onclick = () => {
+  setupGo.onclick = async () => {
     const mode = coerceMode(setupMode.value);
     setupMode.value = mode;
+    showSetupError("");
     if (mode === "byok") {
       const key = setupKey.value.trim();
       if (!key) {
@@ -1320,10 +1377,34 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       storageSet(STORAGE_MODEL, setupModel.value);
       setStoredProviderKey(setupProv.value, key);
     } else {
-      const server = setupServer.value.trim() || DEFAULT_SERVER;
+      const server = hostedManaged
+        ? DEFAULT_SERVER
+        : (setupServer.value.trim() || DEFAULT_SERVER);
       storageSet(STORAGE_SERVER, server);
       const classCode = storeClassCode(setupClassCode.value);
-      setupClassCode.value = classCode;
+      setupClassCode.value = formatClassCodeInput(classCode);
+      if (!classCode) {
+        setupClassCode.style.borderColor = "#ef4444";
+        setupClassCode.focus();
+        showSetupError("Enter the classroom code from your teacher.");
+        return;
+      }
+      setupClassCode.style.borderColor = "#29324e";
+      if (!APP_TOKEN) {
+        setupGo.disabled = true;
+        showSetupError("Joining classroom…");
+        try {
+          const backendUrl = getBackendUrl();
+          await connectManagedSession(backendUrl, classCode, null, { force: true, required: true });
+          showSetupError("");
+        } catch (error) {
+          const message = error && error.message ? error.message : "Could not join classroom.";
+          showSetupError(message);
+          setupGo.disabled = false;
+          return;
+        }
+        setupGo.disabled = false;
+      }
     }
     storageSet(STORAGE_MODE, mode);
     storageSet(STORAGE_SETUP_DONE, "1");
@@ -1378,8 +1459,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   setClassCode.onchange = () => {
     const classCode = storeClassCode(setClassCode.value);
-    setClassCode.value = classCode;
-    setupClassCode.value = classCode;
+    const display = formatClassCodeInput(classCode);
+    setClassCode.value = display;
+    setupClassCode.value = display;
   };
   setClassCode.oninput = setClassCode.onchange;
 
@@ -1432,11 +1514,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── Monaco helpers ──────────────────────────────────────── */
   const clickLike = (root, labels) => {
     const list = labels.map((label) => label.toLowerCase());
-    const elements = [...root.querySelectorAll("button,[role='tab'],a,[aria-label]")].filter((node) => node && node.offsetParent !== null);
+    const doc = root && root.querySelectorAll ? root : (root && root.document) || document;
+    const elements = [...doc.querySelectorAll("button,[role='tab'],a,[aria-label]")].filter((node) => node && node.offsetParent !== null);
     for (const el of elements) {
       const text = ((el.innerText || el.textContent || "") + " " + (el.getAttribute("aria-label") || "")).trim().toLowerCase();
-      if (list.some((entry) => text === entry || text.includes(entry))) {
+      if (!list.some((entry) => text === entry || text.includes(entry))) continue;
+      if (typeof el.click === "function") {
         el.click();
+        return el;
+      }
+      if (typeof el.dispatchEvent === "function") {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         return el;
       }
     }
@@ -3317,12 +3405,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
   };
 
-  const connectManagedSession = async (backendUrl, classCode, signal) => {
+  const connectManagedSession = async (backendUrl, classCode, signal, options = {}) => {
     const normalizedCode = normaliseClassCode(classCode);
     if (!normalizedCode || APP_TOKEN) return "";
 
-    const existingSession = getStoredManagedSession();
-    if (existingSession) return existingSession;
+    if (!options.force) {
+      const existingSession = getStoredManagedSession();
+      if (existingSession) return existingSession;
+    } else {
+      clearManagedSession();
+    }
 
     logLine("Connecting to classroom server...");
     const response = await fetch(backendUrl + "/vibbit/connect", {
@@ -3336,6 +3428,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     });
 
     if (response.status === 404 || response.status === 405) {
+      if (options.required) {
+        throw new Error("This server does not support classroom codes yet.");
+      }
       return "";
     }
 
@@ -3343,14 +3438,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (!response.ok) {
       const message = json && json.error
         ? json.error
-        : (response.status === 401 ? "Invalid class code." : ("Classroom connect failed (HTTP " + response.status + ")."));
+        : (response.status === 401 ? "That classroom code was not recognised." : ("Classroom connect failed (HTTP " + response.status + ")."));
       throw new Error(message);
     }
 
     const token = json && typeof json.sessionToken === "string" ? json.sessionToken.trim() : "";
-    if (!token) return "";
+    if (!token) {
+      if (options.required) throw new Error("Classroom connect did not return a session.");
+      return "";
+    }
     saveManagedSession(token, json.expiresAt);
-    logLine("Connected to classroom session.");
+    const classroomName = json && typeof json.classroomName === "string" ? json.classroomName.trim() : "";
+    setClassroomName(classroomName);
+    logLine(classroomName ? ("Connected to " + classroomName + ".") : "Connected to classroom session.");
     return token;
   };
 

@@ -5,19 +5,43 @@ import {
   buildCorrectionInstruction,
   buildSystemPrompt,
   buildUserPrompt,
-  extractGeminiText,
   normaliseFeedback,
   parseModelOutput,
   stubForTarget,
   validateBlocksCompatibility
 } from "../../../shared/makecode-compat-core.mjs";
+import {
+  joinHtmlResponse,
+  renderJoinAvailablePage,
+  renderJoinUnavailablePage,
+  resolveJoinAvailability
+} from "./join-page.mjs";
+import { createTeacherPortal } from "./teacher-portal.mjs";
+import { assertModelOverrideMatchesTestedProfile } from "./classroom-store.mjs";
+import {
+  createDeploymentPolicy,
+  resolveRequestPublicOrigin,
+  resolveTrustedClientIp
+} from "./deployment-policy.mjs";
+import { createOutboundUrlPolicy } from "./outbound-url-policy.mjs";
+import {
+  callManagedProvider,
+  createProviderConfigFromCredentialProfile,
+  resolveManagedBaseUrlForProvider
+} from "./provider-registry.mjs";
+import { createRateLimitController } from "./rate-limit.mjs";
+import { createUsageStore } from "./usage-store.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
 const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
-const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_JSON_BYTES = 256 * 1024;
+const MAX_REQUEST_CHARS = 4000;
+const MAX_CURRENT_CODE_CHARS = 50000;
+const MAX_PAGE_ERROR_CHARS = 500;
+const MAX_UPSTREAM_ATTEMPTS = 3;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-const CLASS_CODE_LENGTH = 5;
+const CLASS_CODE_LENGTH = 10;
 const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
 const BOOKMARKLET_INSTALL_ROUTE = "/bookmarklet";
 const EXTENSION_DOWNLOAD_ROUTE = "/download/vibbit-extension.zip";
@@ -77,7 +101,10 @@ function firstHeaderToken(value) {
     .trim();
 }
 
-function resolvePublicOrigin(request, requestUrl) {
+function resolvePublicOrigin(request, requestUrl, deploymentPolicy) {
+  if (deploymentPolicy) {
+    return resolveRequestPublicOrigin(request, requestUrl, deploymentPolicy);
+  }
   const forwardedProto = firstHeaderToken(request.headers.get("x-forwarded-proto")).toLowerCase();
   const forwardedHost = firstHeaderToken(request.headers.get("x-forwarded-host"));
   const protocol = (forwardedProto === "http" || forwardedProto === "https")
@@ -302,7 +329,8 @@ function buildEffectiveProviderConfig(baseProviderConfig, adminProviderStateInpu
     apiKeyFor: (provider) => {
       const safeProvider = normaliseProvider(provider);
       return adminProviderState.apiKeys[safeProvider] || baseProviderConfig.apiKeyFor(safeProvider);
-    }
+    },
+    baseUrlFor: (provider) => resolveManagedBaseUrlForProvider(provider)
   };
 }
 
@@ -348,16 +376,28 @@ function createSessionStore(ttlMs) {
     return { token, expiresAt };
   };
 
-  const isValidSession = (token) => {
-    if (!token) return false;
+  const getSession = (token) => {
+    if (!token) return null;
     pruneExpired();
     const entry = sessions.get(token);
-    if (!entry) return false;
-    return entry.expiresAt > Date.now();
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      sessions.delete(token);
+      return null;
+    }
+    return {
+      token,
+      createdAt: entry.createdAt,
+      expiresAt: entry.expiresAt,
+      meta: entry.meta
+    };
   };
+
+  const isValidSession = (token) => Boolean(getSession(token));
 
   return {
     createSession,
+    getSession,
     isValidSession,
     pruneExpired,
     size: () => sessions.size
@@ -366,7 +406,8 @@ function createSessionStore(ttlMs) {
 
 function createRuntimeConfig(envInput = {}) {
   const env = envInput || {};
-  const allowOrigin = env.VIBBIT_ALLOW_ORIGIN || "*";
+  const deployment = createDeploymentPolicy(env);
+  const allowOrigin = deployment.allowOrigin;
   const requestTimeoutMs = parseInteger(env.VIBBIT_REQUEST_TIMEOUT_MS, 60000, { min: 5000, max: 180000 });
   const emptyRetries = parseInteger(env.VIBBIT_EMPTY_RETRIES, 2, { min: 0, max: 5 });
   const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
@@ -382,10 +423,16 @@ function createRuntimeConfig(envInput = {}) {
   ).trim();
   const providerConfig = createProviderConfig(env);
   const appToken = String(env.SERVER_APP_TOKEN || "").trim();
+  if (deployment.isHosted && appToken) {
+    throw new Error("Hosted mode rejects SERVER_APP_TOKEN. Use teacher classroom codes instead.");
+  }
 
   const classroomEnabled = appToken
     ? false
     : parseBoolean(env.VIBBIT_CLASSROOM_ENABLED, true);
+  if (deployment.isHosted && !classroomEnabled) {
+    throw new Error("Hosted mode requires classroom auth. Do not set VIBBIT_CLASSROOM_ENABLED=false.");
+  }
   const classCodeLength = parseInteger(env.VIBBIT_CLASSROOM_CODE_LENGTH, CLASS_CODE_LENGTH, {
     min: CLASS_CODE_LENGTH,
     max: CLASS_CODE_LENGTH
@@ -400,12 +447,11 @@ function createRuntimeConfig(envInput = {}) {
     || env.VIBBIT_OPENROUTER_API_KEY
     || ""
   );
-  const classroomCode = classroomEnabled
+  const legacyCodesEnabled = deployment.legacyClassroomCodesEnabled;
+  const classroomCode = classroomEnabled && legacyCodesEnabled
     ? (configuredCode || (autoGenerateCode ? generateClassCodeFromSeed(classCodeSeed, classCodeLength) : ""))
     : "";
-  if (classroomEnabled && !classroomCode) {
-    throw new Error("Classroom auth is enabled but no class code is available.");
-  }
+  // Hosted mode uses teacher-minted codes only; legacy single-code mode is self-hosted.
 
   const sessionTtlMs = parseInteger(env.VIBBIT_SESSION_TTL_MS, 8 * 60 * 60 * 1000, {
     min: 5 * 60 * 1000,
@@ -414,7 +460,10 @@ function createRuntimeConfig(envInput = {}) {
 
   let authMode = "none";
   if (appToken) authMode = "app-token";
-  else if (classroomEnabled) authMode = "classroom";
+  else if (classroomEnabled || deployment.isHosted) authMode = "classroom";
+  if (deployment.isHosted && authMode !== "classroom") {
+    throw new Error("Hosted mode requires classroom auth.");
+  }
 
   return {
     allowOrigin,
@@ -429,7 +478,8 @@ function createRuntimeConfig(envInput = {}) {
     authMode,
     classroomCode,
     classCodeLength,
-    sessionTtlMs
+    sessionTtlMs,
+    deployment
   };
 }
 
@@ -439,14 +489,7 @@ function buildCorsHeaders(origin, config) {
     .map((item) => item.replace(/\/+$/, ""))
     .filter(Boolean);
 
-  let allowOrigin = "*";
-  if (configuredOrigins.length && !configuredOrigins.includes("*")) {
-    if (requestOrigin && configuredOrigins.includes(requestOrigin)) allowOrigin = requestOrigin;
-    else allowOrigin = configuredOrigins[0];
-  }
-
-  return {
-    "Access-Control-Allow-Origin": allowOrigin,
+  const headers = {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": DEFAULT_CORS_HEADERS,
     // Required by Chromium private-network access preflights when the
@@ -454,6 +497,18 @@ function buildCorsHeaders(origin, config) {
     "Access-Control-Allow-Private-Network": "true",
     "Access-Control-Max-Age": "86400"
   };
+
+  if (!configuredOrigins.length || configuredOrigins.includes("*")) {
+    headers["Access-Control-Allow-Origin"] = "*";
+    return headers;
+  }
+
+  // Explicit allow-list: echo only matching origins; never fall back to another origin.
+  if (requestOrigin && configuredOrigins.includes(requestOrigin)) {
+    headers["Access-Control-Allow-Origin"] = requestOrigin;
+  }
+
+  return headers;
 }
 
 function respondJson(status, body, origin, config) {
@@ -506,15 +561,49 @@ function handleOptions(origin, config) {
 }
 
 async function readJson(request, maxBytes = MAX_JSON_BYTES) {
+  const contentLength = Number(request.headers.get("content-length") || "");
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    const error = new Error("Payload too large");
+    error.statusCode = 413;
+    throw error;
+  }
+
+  if (request.body && typeof request.body.getReader === "function") {
+    const reader = request.body.getReader();
+    const decoder = new TextDecoder();
+    let totalBytes = 0;
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        const error = new Error("Payload too large");
+        error.statusCode = 413;
+        throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error("Invalid JSON");
+    }
+  }
+
   const text = await request.text();
   const size = new TextEncoder().encode(text).length;
   if (size > maxBytes) {
-    throw new Error("Payload too large");
+    const error = new Error("Payload too large");
+    error.statusCode = 413;
+    throw error;
   }
   if (!text) return {};
   try {
     return JSON.parse(text);
-  } catch (error) {
+  } catch {
     throw new Error("Invalid JSON");
   }
 }
@@ -556,94 +645,59 @@ function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
   });
 }
 
-async function callOpenAI(key, model, system, user, signal) {
-  const body = {
-    model,
-    temperature: 0.1,
-    max_tokens: 3072,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }]
-  };
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + key
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
-}
-
-async function callOpenRouter(key, model, system, user, signal) {
-  const body = {
-    model,
-    temperature: 0.1,
-    max_tokens: 3072,
-    messages: [{ role: "system", content: system }, { role: "user", content: user }]
-  };
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + key
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenRouter error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
-}
-
-async function callGemini(key, model, system, user, signal) {
-  const url = "https://generativelanguage.googleapis.com/v1/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key);
-  const body = {
-    contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: 3072
-    }
-  };
-
-  const response = await fetch(url, {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    throw new Error(`Gemini error (${response.status})`);
-  }
-
-  const data = await response.json();
-  return extractGeminiText(data);
-}
-
-async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig, providerConfig) {
-  const selected = resolveProviderSelection(providerConfig || runtimeConfig.providerConfig, provider, model);
+async function generateManaged(
+  { target, request, currentCode, pageErrors, conversionDialog, provider, model },
+  runtimeConfig,
+  providerConfig,
+  { onUpstreamAttempt, outboundUrlPolicy } = {}
+) {
+  const effectiveProviderConfig = providerConfig || runtimeConfig.providerConfig;
+  const selected = resolveProviderSelection(effectiveProviderConfig, provider, model);
+  const providerBaseUrl = typeof effectiveProviderConfig.baseUrlFor === "function"
+    ? effectiveProviderConfig.baseUrlFor(selected.provider)
+    : "";
 
   const system = buildSystemPrompt(target);
   const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
-  const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
-    if (selected.provider === "openai") return callOpenAI(selected.key, selected.model, systemPrompt, user, signal);
-    if (selected.provider === "gemini") return callGemini(selected.key, selected.model, systemPrompt, user, signal);
-    if (selected.provider === "openrouter") return callOpenRouter(selected.key, selected.model, systemPrompt, user, signal);
-    throw new Error(`Unsupported provider '${selected.provider}'`);
-  }, runtimeConfig.requestTimeoutMs);
+  let upstreamAttempts = 0;
+  const maxAttempts = Math.min(
+    MAX_UPSTREAM_ATTEMPTS,
+    1 + (runtimeConfig.emptyRetries || 0) + (runtimeConfig.validationRetries || 0)
+  );
+
+  const fetchImpl = outboundUrlPolicy && typeof outboundUrlPolicy.fetchSafe === "function"
+    ? (url, init) => outboundUrlPolicy.fetchSafe(url, init, { purpose: "managed provider endpoint" })
+    : fetch;
+
+  const callProvider = async (systemPrompt) => {
+    if (upstreamAttempts >= maxAttempts) {
+      throw new Error("Upstream attempt limit reached");
+    }
+    upstreamAttempts += 1;
+    try {
+      const raw = await withTimeout(async (signal) => {
+        return callManagedProvider({
+          provider: selected.provider,
+          apiKey: selected.key,
+          model: selected.model,
+          system: systemPrompt,
+          user,
+          signal,
+          customBaseUrl: providerBaseUrl,
+          fetchImpl
+        });
+      }, runtimeConfig.requestTimeoutMs);
+      if (typeof onUpstreamAttempt === "function") {
+        await onUpstreamAttempt({ success: true, attempt: upstreamAttempts });
+      }
+      return raw;
+    } catch (error) {
+      if (typeof onUpstreamAttempt === "function") {
+        await onUpstreamAttempt({ success: false, attempt: upstreamAttempts, error });
+      }
+      throw error;
+    }
+  };
 
   const oneAttempt = async (extraSystem, insistOnlyCode) => {
     const prompt = system
@@ -658,11 +712,11 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
 
   let result = await oneAttempt("", false);
 
-  for (let i = 0; i < runtimeConfig.emptyRetries && (!result.code || !result.code.trim()); i++) {
+  for (let i = 0; i < runtimeConfig.emptyRetries && upstreamAttempts < maxAttempts && (!result.code || !result.code.trim()); i++) {
     result = await oneAttempt("Your last message had empty code. Return valid JSON only with feedback[] and code string.", true);
   }
 
-  for (let i = 0; i < runtimeConfig.validationRetries && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
+  for (let i = 0; i < runtimeConfig.validationRetries && upstreamAttempts < maxAttempts && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
     const violations = result.validation.violations || [];
     const extra = buildCorrectionInstruction(violations, target, { strict: i > 0 });
     result = await oneAttempt(extra, true);
@@ -674,7 +728,8 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
       feedback: normaliseFeedback(
         [...(result.feedback || []), "Model returned no code; provided fallback stub."],
         DEFAULT_FEEDBACK
-      )
+      ),
+      upstreamAttempts
     };
   }
 
@@ -685,13 +740,15 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
       feedback: normaliseFeedback(
         [...(result.feedback || []), "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")],
         DEFAULT_FEEDBACK
-      )
+      ),
+      upstreamAttempts
     };
   }
 
   return {
     code: result.code,
-    feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK)
+    feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK),
+    upstreamAttempts
   };
 }
 
@@ -709,7 +766,7 @@ function validatePayload(payload) {
   const model = payload && typeof payload.model === "string" ? payload.model.trim() : "";
   const rawPageErrors = payload && Array.isArray(payload.pageErrors) ? payload.pageErrors : [];
   const pageErrors = rawPageErrors
-    .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+    .map((item) => String(item || "").replace(/\s+/g, " ").trim().slice(0, MAX_PAGE_ERROR_CHARS))
     .filter(Boolean)
     .slice(0, 8);
   const rawConversionDialog = payload && payload.conversionDialog && typeof payload.conversionDialog === "object"
@@ -718,12 +775,20 @@ function validatePayload(payload) {
   const conversionDialog = rawConversionDialog
     ? {
       title: String(rawConversionDialog.title || "").replace(/\s+/g, " ").trim().slice(0, 220),
-      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 320)
+      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 1000)
     }
     : null;
 
-  if (!request) {
+  const hasAutoFixContext = pageErrors.length > 0
+    || (conversionDialog && (conversionDialog.title || conversionDialog.description));
+  if (!request && !hasAutoFixContext) {
     return { ok: false, error: "'request' is required" };
+  }
+  if (request.length > MAX_REQUEST_CHARS) {
+    return { ok: false, error: `'request' must be at most ${MAX_REQUEST_CHARS} characters` };
+  }
+  if (currentCode.length > MAX_CURRENT_CODE_CHARS) {
+    return { ok: false, error: `'currentCode' must be at most ${MAX_CURRENT_CODE_CHARS} characters` };
   }
 
   const safeTarget = ["microbit", "arcade", "maker"].includes(target) ? target : "microbit";
@@ -1047,6 +1112,13 @@ function renderLandingPage({
           <h1>Vibbit</h1>
         </div>
         <p class="intro">Vibbit is an AI coding assistant for micro:bit MakeCode, available as a Chrome extension and bookmarklet, with both managed backend mode and BYOK provider support.</p>
+        <div class="cta-row">
+          <a class="action action-primary" href="/teacher">Teacher portal</a>
+          ${canUseBookmarklet
+            ? `<a class="action action-secondary" href="${escapeHtml(BOOKMARKLET_INSTALL_ROUTE)}">Bookmarklet</a>`
+            : ""}
+        </div>
+        <p style="color: var(--muted);">Teachers sign in, add an OpenAI-compatible API key, and mint a classroom code for students.</p>
       </section>
 
       <section class="grid">
@@ -1285,6 +1357,15 @@ function isClassroomCodeValid(candidate, runtimeConfig) {
   return normaliseClassCode(candidate) === runtimeConfig.classroomCode;
 }
 
+function getRequestSession(request, sessionStore) {
+  const authHeader = request.headers.get("authorization");
+  const bearer = extractBearerToken(authHeader);
+  const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
+  // Prefer Authorization bearer (client contract) so a forged x-vibbit-session
+  // cannot switch the rate-limit bucket away from the authenticated session.
+  return sessionStore.getSession(bearer) || sessionStore.getSession(sessionHeader) || null;
+}
+
 function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
   const authMode = getAuthMode(runtimeConfig);
   if (authMode === "none") return true;
@@ -1297,11 +1378,7 @@ function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
   }
 
   if (authMode === "classroom") {
-    const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
-    if (sessionStore.isValidSession(sessionHeader) || sessionStore.isValidSession(bearer)) {
-      return true;
-    }
-    return false;
+    return Boolean(getRequestSession(request, sessionStore));
   }
 
   return false;
@@ -1309,14 +1386,24 @@ function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
 
 function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } = {}) {
   const providerConfig = effectiveProviderConfig || runtimeConfig.providerConfig;
+  const deployment = runtimeConfig.deployment || {};
   const info = [
+    `[Vibbit backend] Deployment mode=${deployment.mode || "self-hosted"}`,
     `[Vibbit backend] Provider=${providerConfig.defaultProvider} model=${providerConfig.defaultModelFor(providerConfig.defaultProvider)}`,
     `[Vibbit backend] Enabled providers=${providerConfig.enabledProviders.join(", ")}`,
     `[Vibbit backend] Auth mode=${getAuthMode(runtimeConfig)}`
   ];
   if (listenUrl) info.unshift(`[Vibbit backend] Listening on ${listenUrl}`);
+  if (deployment.publicOrigin) {
+    info.push(`[Vibbit backend] Public origin=${deployment.publicOrigin}`);
+  }
   if (getAuthMode(runtimeConfig) === "classroom") {
-    info.push(`[Vibbit backend] Share with students -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+    if (runtimeConfig.classroomCode) {
+      info.push(`[Vibbit backend] Legacy class code -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+    } else if (deployment.isHosted) {
+      info.push("[Vibbit backend] Hosted mode: legacy class codes disabled; teachers mint codes at /teacher");
+    }
+    info.push(`[Vibbit backend] Teachers mint classroom codes at ${(deployment.publicOrigin || listenUrl || "<your-server-url>")}/teacher`);
   }
   if (runtimeConfig.bookmarkletEnabled) {
     info.push(`[Vibbit backend] Bookmarklet install page -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_INSTALL_ROUTE}`);
@@ -1422,7 +1509,7 @@ function resolveExtensionDownloadTarget(request, requestUrl, runtimeConfig) {
   if (!configured) return "";
   if (/^https?:\/\//i.test(configured)) return configured;
   try {
-    const publicOrigin = resolvePublicOrigin(request, requestUrl);
+    const publicOrigin = resolvePublicOrigin(request, requestUrl, runtimeConfig.deployment);
     return new URL(configured, `${publicOrigin}/`).toString();
   } catch {
     return "";
@@ -1443,16 +1530,126 @@ export function createBackendRuntime(options = {}) {
   const persistAdminProviderState = typeof options.persistAdminProviderState === "function"
     ? options.persistAdminProviderState
     : (() => Promise.resolve());
+  const persistTeacherPortalState = typeof options.persistTeacherPortalState === "function"
+    ? options.persistTeacherPortalState
+    : (() => Promise.resolve());
   let adminProviderState = sanitiseAdminProviderState(
     options.adminProviderState || createEmptyAdminProviderState(),
     runtimeConfig.providerConfig.enabledProviders
   );
+  const deployment = runtimeConfig.deployment;
+  const outboundUrlPolicy = options.outboundUrlPolicy
+    || createOutboundUrlPolicy(env, {
+      dnsLookup: typeof options.dnsLookup === "function" ? options.dnsLookup : undefined,
+      // Tests inject dnsLookup and mock globalThis.fetch; keep that path mockable.
+      // Production (no injected dnsLookup) pins DNS on outbound provider calls.
+      pinDns: typeof options.dnsLookup !== "function",
+      fetchImpl: typeof options.outboundFetch === "function" ? options.outboundFetch : null
+    });
+  const rateLimits = options.rateLimits
+    || createRateLimitController(env, {
+      now: typeof options.now === "function" ? options.now : undefined,
+      persistDailyUsage: typeof options.persistDailyUsage === "function"
+        ? options.persistDailyUsage
+        : undefined,
+      loadDailyUsage: typeof options.loadDailyUsage === "function"
+        ? options.loadDailyUsage
+        : undefined
+    });
+  const usageStore = options.usageStore || createUsageStore({
+    now: typeof options.now === "function" ? options.now : undefined,
+    persist: typeof options.persistUsageState === "function" ? options.persistUsageState : undefined,
+    initialState: options.usageState || {}
+  });
+  const teacherPortal = createTeacherPortal({
+    env,
+    initialState: options.teacherPortalState || {},
+    persistState: persistTeacherPortalState,
+    respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig),
+    deploymentPolicy: deployment,
+    outboundUrlPolicy,
+    usageStore
+  });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
+  const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
+
+  const resolveProviderConfigForSession = async (session) => {
+    const classroomId = session && session.meta && session.meta.classroomId
+      ? String(session.meta.classroomId)
+      : "";
+    if (!classroomId) return getEffectiveProviderConfig();
+    const classroom = teacherPortal.store.getClassroom(classroomId);
+    const sessionVersion = Number(session && session.meta && session.meta.sessionVersion);
+    if (
+      !classroom
+      || !classroom.enabled
+      || !Number.isFinite(sessionVersion)
+      || sessionVersion !== classroom.sessionVersion
+    ) {
+      throw Object.assign(new Error("Classroom session is no longer valid"), { statusCode: 401 });
+    }
+    const profile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(classroom);
+    if (!profile) {
+      throw Object.assign(new Error("Classroom is missing a credential profile"), { statusCode: 503 });
+    }
+    if (!profile.apiKey || profile.lastTestOk !== true) {
+      throw Object.assign(
+        new Error("Classroom AI account is not ready. Ask your teacher to test and save it."),
+        { statusCode: 503 }
+      );
+    }
+    try {
+      assertModelOverrideMatchesTestedProfile(profile, classroom.modelOverride);
+    } catch (error) {
+      throw Object.assign(
+        new Error((error && error.message) || "Classroom model is not ready"),
+        { statusCode: 503 }
+      );
+    }
+    if (profile.provider === "custom") {
+      try {
+        await outboundUrlPolicy.assertSafeUrl(profile.customBaseUrl, {
+          purpose: "credential profile custom base URL"
+        });
+      } catch (error) {
+        throw Object.assign(
+          new Error((error && error.message) || "Credential profile endpoint is not allowed"),
+          { statusCode: 503 }
+        );
+      }
+    }
+    return createProviderConfigFromCredentialProfile(profile, {
+      modelOverride: classroom.modelOverride
+    });
+  };
+
+  const respondRateLimited = (origin, decision) => new Response(JSON.stringify({
+    error: "Too many requests. Please wait and try again.",
+    reason: decision.reason || "rate_limited"
+  }), {
+    status: 429,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Retry-After": String(Math.max(1, Number(decision.retryAfterSeconds) || 1)),
+      ...buildCorsHeaders(origin, runtimeConfig)
+    }
+  });
 
   const handleConnect = async (request, origin) => {
+    const clientIp = resolveTrustedClientIp(request, deployment) || "local";
+    const connectLimit = rateLimits.checkConnect({ clientIp });
+    if (!connectLimit.ok) {
+      // Do not persist rejected-connect metrics — that amplifies disk writes under flood.
+      return respondRateLimited(origin, connectLimit);
+    }
+
     const authMode = getAuthMode(runtimeConfig);
     const body = await readJson(request, 16 * 1024);
     const providedCode = body && (body.classCode || body.code);
+    let classroomId = "";
+    let classroomName = "";
+    let sessionMeta = null;
+    let publicProviderConfig = getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig());
 
     if (authMode === "app-token") {
       const token = extractBearerToken(request.headers.get("authorization"));
@@ -1461,18 +1658,57 @@ export function createBackendRuntime(options = {}) {
       }
     } else if (authMode === "classroom") {
       const classHeader = request.headers.get("x-vibbit-class-code");
-      if (!isClassroomCodeValid(providedCode || classHeader, runtimeConfig)) {
+      const candidateCode = providedCode || classHeader;
+      const teacherClassroom = teacherPortal.store.findClassroomByCode(candidateCode);
+      if (teacherClassroom) {
+        const effectiveProfile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(teacherClassroom);
+        if (!effectiveProfile) {
+          return respondJson(503, {
+            error: "Classroom is not ready yet. Ask your teacher to choose a credential profile."
+          }, origin, runtimeConfig);
+        }
+        if (!effectiveProfile.apiKey || effectiveProfile.lastTestOk !== true) {
+          return respondJson(503, {
+            error: "Classroom is not ready yet. Ask your teacher to test and save the AI account."
+          }, origin, runtimeConfig);
+        }
+        try {
+          assertModelOverrideMatchesTestedProfile(effectiveProfile, teacherClassroom.modelOverride);
+        } catch (error) {
+          return respondJson(503, {
+            error: (error && error.message)
+              || "Classroom model is not ready. Ask your teacher to clear or retest the classroom model."
+          }, origin, runtimeConfig);
+        }
+        classroomId = teacherClassroom.id;
+        classroomName = String(teacherClassroom.name || "").trim().slice(0, 120);
+        publicProviderConfig = getPublicServerConfig(
+          runtimeConfig,
+          createProviderConfigFromCredentialProfile(effectiveProfile, {
+            modelOverride: teacherClassroom.modelOverride
+          })
+        );
+        sessionMeta = {
+          student: String((body && body.student) || "").trim().slice(0, 120),
+          classroomId,
+          sessionVersion: teacherClassroom.sessionVersion
+        };
+      } else if (!isClassroomCodeValid(candidateCode, runtimeConfig)) {
         return respondJson(401, { error: "Invalid class code" }, origin, runtimeConfig);
       }
     }
 
-    const session = sessionStore.createSession({
-      student: String((body && body.student) || "").trim().slice(0, 120)
+    const session = sessionStore.createSession(sessionMeta || {
+      student: String((body && body.student) || "").trim().slice(0, 120),
+      classroomId
     });
+
+    await usageStore.recordConnect(classroomId || "legacy");
 
     return respondJson(200, {
       ok: true,
-      ...getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig()),
+      ...publicProviderConfig,
+      ...(classroomName ? { classroomName } : {}),
       sessionToken: session.token,
       expiresAt: new Date(session.expiresAt).toISOString()
     }, origin, runtimeConfig);
@@ -1491,7 +1727,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (rawPathname === "/" && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
       const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
         ? { enableManaged: true, enableByok: true }
@@ -1541,7 +1777,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_RUNTIME_ROUTE && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeSource = buildBookmarkletRuntimeSource(bookmarkletRuntimeTemplate, publicOrigin);
       return respondJavaScript(200, runtimeSource, origin, runtimeConfig, {
         "Cache-Control": "no-store"
@@ -1549,7 +1785,7 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_INSTALL_ROUTE && request.method === "GET") {
-      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const publicOrigin = publicOriginFor(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
       const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
         ? { enableManaged: true, enableByok: true }
@@ -1587,6 +1823,55 @@ export function createBackendRuntime(options = {}) {
       } catch (error) {
         const { status, message } = classifyRequestError(error, runtimeConfig);
         return respondJson(status, { error: message }, origin, runtimeConfig);
+      }
+    }
+
+    if (pathname === "/teacher" || pathname.startsWith("/teacher/")) {
+      const teacherResponse = await teacherPortal.handle(request, {
+        pathname,
+        origin,
+        publicOrigin: publicOriginFor(request, requestUrl),
+        requestUrl
+      });
+      if (teacherResponse) return teacherResponse;
+    }
+
+    const joinMatch = pathname.match(/^\/join\/([A-Za-z0-9-]{3,24})$/);
+    if (joinMatch && request.method === "GET") {
+      const corsHeaders = buildCorsHeaders(origin, runtimeConfig);
+      const clientIp = resolveTrustedClientIp(request, deployment) || "local";
+      const joinLimit = rateLimits.checkJoin({ clientIp });
+      if (!joinLimit.ok) {
+        return new Response(renderJoinUnavailablePage(), {
+          status: 429,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Retry-After": String(Math.max(1, Number(joinLimit.retryAfterSeconds) || 1)),
+            "Cache-Control": "no-store",
+            ...corsHeaders
+          }
+        });
+      }
+      const joinCode = joinMatch[1];
+      const availability = resolveJoinAvailability(teacherPortal.store, joinCode);
+      const html = availability.available
+        ? renderJoinAvailablePage({
+          code: availability.code,
+          classroomName: availability.classroom && availability.classroom.name,
+          publicOrigin: publicOriginFor(request, requestUrl),
+          codeOnly: deployment.mode === "hosted",
+          bookmarkletPath: BOOKMARKLET_INSTALL_ROUTE,
+          extensionPath: EXTENSION_DOWNLOAD_ROUTE
+        })
+        : renderJoinUnavailablePage();
+      return joinHtmlResponse(200, html, { corsHeaders });
+    }
+
+    if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+      if (!deployment.adminPanelEnabled) {
+        return respondJson(404, {
+          error: "Admin panel is unavailable in hosted mode. Use /teacher."
+        }, origin, runtimeConfig);
       }
     }
 
@@ -1650,11 +1935,72 @@ export function createBackendRuntime(options = {}) {
           return respondJson(400, { error: validated.error }, origin, runtimeConfig);
         }
 
-        const result = await generateManaged(validated.value, runtimeConfig, getEffectiveProviderConfig());
-        return respondJson(200, result, origin, runtimeConfig);
+        const session = getRequestSession(request, sessionStore);
+        const classroomId = session && session.meta && session.meta.classroomId
+          ? String(session.meta.classroomId)
+          : "";
+        if (classroomId && (validated.value.provider || validated.value.model)) {
+          return respondJson(400, {
+            error: "Classroom sessions cannot override provider or model."
+          }, origin, runtimeConfig);
+        }
+
+        const sessionToken = session && session.token ? String(session.token) : "";
+        let providerConfig;
+        try {
+          providerConfig = await resolveProviderConfigForSession(session);
+        } catch (error) {
+          if (error && Number.isFinite(error.statusCode)) {
+            return respondJson(error.statusCode, {
+              error: error.message || "Request failed"
+            }, origin, runtimeConfig);
+          }
+          throw error;
+        }
+
+        const reservation = await rateLimits.reserveGenerate({
+          sessionToken,
+          classroomId
+        });
+        if (!reservation.ok) {
+          // In-memory counter only — do not persist rejected-generate metrics
+          // (that amplifies disk/crypto work under flood). Same posture as connect.
+          await usageStore.recordRateLimited(classroomId || "legacy");
+          return respondRateLimited(origin, reservation);
+        }
+
+        try {
+          await usageStore.recordAcceptedGeneration(classroomId || "legacy");
+          const result = await generateManaged(
+            validated.value,
+            runtimeConfig,
+            providerConfig,
+            {
+              outboundUrlPolicy,
+              onUpstreamAttempt: async ({ success }) => {
+                await usageStore.recordUpstreamAttempt(classroomId || "legacy", { success });
+              }
+            }
+          );
+          return respondJson(200, {
+            code: result.code,
+            feedback: result.feedback
+          }, origin, runtimeConfig);
+        } finally {
+          if (typeof reservation.release === "function") reservation.release();
+        }
       } catch (error) {
+        if (error && Number.isFinite(error.statusCode)) {
+          return respondJson(error.statusCode, {
+            error: error.message || "Request failed"
+          }, origin, runtimeConfig);
+        }
+        if (error && error.statusCode === 413) {
+          return respondJson(413, { error: error.message || "Payload too large" }, origin, runtimeConfig);
+        }
         const { status, message } = classifyRequestError(error, runtimeConfig);
-        return respondJson(status, { error: message }, origin, runtimeConfig);
+        const statusCode = /too large/i.test(message) ? 413 : status;
+        return respondJson(statusCode, { error: message }, origin, runtimeConfig);
       }
     }
 
@@ -1664,9 +2010,18 @@ export function createBackendRuntime(options = {}) {
   return {
     config: runtimeConfig,
     fetch: fetchHandler,
-    getStartupInfo: (options) => buildStartupInfo(runtimeConfig, {
-      ...(options || {}),
-      effectiveProviderConfig: getEffectiveProviderConfig()
-    })
+    teacherPortal,
+    rateLimits,
+    usageStore,
+    getStartupInfo: (options) => {
+      const listenUrl = options && options.listenUrl;
+      return [
+        ...buildStartupInfo(runtimeConfig, {
+          ...(options || {}),
+          effectiveProviderConfig: getEffectiveProviderConfig()
+        }),
+        ...teacherPortal.getStartupLines(listenUrl)
+      ];
+    }
   };
 }
