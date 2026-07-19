@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createBackendRuntime } from "./runtime.mjs";
 import { sanitiseTeacherPortalState } from "./classroom-store.mjs";
+import { ADAPTER_CLIENT_IP_HEADER } from "./deployment-policy.mjs";
 import { createStateCodec } from "./state-codec.mjs";
 import { sanitiseUsageState } from "./usage-store.mjs";
 
@@ -184,6 +185,7 @@ function toFetchRequest(req) {
 
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
+    if (String(key).toLowerCase() === ADAPTER_CLIENT_IP_HEADER) continue;
     if (Array.isArray(value)) {
       for (const item of value) {
         if (item != null) headers.append(key, item);
@@ -192,6 +194,11 @@ function toFetchRequest(req) {
     }
     if (value != null) headers.set(key, value);
   }
+
+  const peer = req.socket && req.socket.remoteAddress
+    ? String(req.socket.remoteAddress).trim()
+    : "";
+  if (peer) headers.set(ADAPTER_CLIENT_IP_HEADER, peer);
 
   const method = (req.method || "GET").toUpperCase();
   const init = { method, headers };

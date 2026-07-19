@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CLASS_CODE_LENGTH,
   createTeacherPortalStore,
+  formatClassCode,
+  generateClassCode,
   normaliseApiBaseUrl,
+  normaliseClassCode,
   sanitiseTeacherPortalState
 } from "./classroom-store.mjs";
+
+test("classroom codes are 10 letters and display with a hyphen", () => {
+  const minted = generateClassCode();
+  assert.equal(minted.length, CLASS_CODE_LENGTH);
+  assert.equal(normaliseClassCode("abcde-fghij"), "ABCDEFGHIJ");
+  assert.equal(formatClassCode("ABCDEFGHIJ"), "ABCDE-FGHIJ");
+  assert.equal(formatClassCode("JOINQ"), "JOINQ");
+});
 
 const teacherA = {
   id: "local:teacher-a@school.edu",

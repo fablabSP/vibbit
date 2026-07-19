@@ -1,6 +1,7 @@
 import {
   createTeacherId,
   createTeacherPortalStore,
+  formatClassCode,
   normaliseApiBaseUrl,
   sanitiseTeacherPortalState
 } from "./classroom-store.mjs";
@@ -489,7 +490,7 @@ function renderLoginPage({
     <div class="panel">
       <h2>Sign in</h2>
       ${googleBlock}
-      <p class="hint">Students using the Vibbit extension enter only your classroom code (server is baked in as <code>${escapeHtml(publicOrigin)}</code>). You can also share <code>/join/CODE</code>.</p>
+      <p class="hint">Students using the shipped Vibbit extension enter only your classroom code (server is baked in as <code>${escapeHtml(publicOrigin)}</code>). You can also share <code>/join/CODE</code> for projector instructions.</p>
     </div>
     ${magicBlock}
     ${devBlock}
@@ -560,25 +561,28 @@ function renderDashboardPage({
           </label>
           <div class="actions row">
             <button type="submit">Save profile</button>
-            <button type="submit" class="secondary" formaction="/teacher/profiles/${escapeHtml(profile.id)}/test">Test key</button>
+            <button type="submit" class="secondary" formaction="/teacher/profiles/${escapeHtml(profile.id)}/test">Test and save</button>
           </div>
         </form>
-        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}/delete" class="actions">
+        <form method="post" action="/teacher/profiles/${escapeHtml(profile.id)}/delete" class="actions" onsubmit="return confirm('Delete this AI account? Classrooms that still use it must be reassigned first.');">
           ${csrfHiddenInput(csrfToken)}
-          <button type="submit" class="danger">Delete profile</button>
+          <button type="submit" class="danger">Delete AI account</button>
         </form>
       </div>
     `).join("")
-    : `<div class="panel"><p>No credential profiles yet. Create one below before minting classrooms.</p></div>`;
+    : `<div class="panel"><p>No AI accounts yet. Connect one below before creating classrooms.</p></div>`;
   const classroomCards = classrooms.length
-    ? classrooms.map((classroom) => `
+    ? classrooms.map((classroom) => {
+      const displayCode = formatClassCode(classroom.code);
+      const joinPath = `/join/${encodeURIComponent(displayCode)}`;
+      return `
       <div class="panel">
         <div class="classroom-meta">
           <strong>${escapeHtml(classroom.name)}</strong>
-          <div>Classroom code: <span class="code code-lg">${escapeHtml(classroom.code)}</span> · <a href="/join/${escapeHtml(classroom.code)}">Project code</a></div>
-          <div class="hint">Join link: <code>${escapeHtml(publicOrigin)}/join/${escapeHtml(classroom.code)}</code></div>
+          <div>Classroom code: <span class="code code-lg">${escapeHtml(displayCode)}</span> · <a href="${escapeHtml(joinPath)}">Share with students</a></div>
+          <div class="hint">Join link: <code>${escapeHtml(publicOrigin)}${escapeHtml(joinPath)}</code></div>
           <div class="hint">Students enter this code in Vibbit (server baked as <code>${escapeHtml(publicOrigin)}</code>).</div>
-          <div class="hint">Credential profile: <code>${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}</code>${classroom.usingTeacherDefault ? " (teacher default)" : ""} · Provider: <code>${escapeHtml(classroom.resolvedProviderLabel || "Not set")}</code> · Model: <code>${escapeHtml(classroom.resolvedModel || "Not set")}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
+          <div class="hint">AI account: <code>${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}</code>${classroom.usingTeacherDefault ? " (teacher default)" : ""} · Provider: <code>${escapeHtml(classroom.resolvedProviderLabel || "Not set")}</code> · Model: <code>${escapeHtml(classroom.resolvedModel || "Not set")}</code> · Key: ${classroom.hasApiKey ? "saved" : "<span class=\"error\" style=\"display:inline;padding:0;border:0;background:none\">missing</span>"}</div>
           ${classroom.resolvedCustomBaseUrl
             ? `<div class="hint">Custom base URL: <code>${escapeHtml(classroom.resolvedCustomBaseUrl)}</code></div>`
             : ""}
@@ -591,7 +595,7 @@ function renderDashboardPage({
           <label>Classroom name
             <input type="text" name="name" value="${escapeHtml(classroom.name)}" maxlength="120" required />
           </label>
-          <label>Credential profile
+          <label>AI account
             <select name="credentialProfileId">
               ${renderCredentialProfileOptions({
                 credentialProfiles,
@@ -611,17 +615,18 @@ function renderDashboardPage({
             <button type="submit">Save classroom</button>
           </div>
         </form>
-        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/rotate" class="actions">
+        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/rotate" class="actions" onsubmit="return confirm('Replace this classroom code? Connected students will need the new code.');">
           ${csrfHiddenInput(csrfToken)}
-          <button type="submit" class="secondary">Mint new code</button>
+          <button type="submit" class="secondary">Replace classroom code</button>
         </form>
-        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/delete" class="actions">
+        <form method="post" action="/teacher/classrooms/${escapeHtml(classroom.id)}/delete" class="actions" onsubmit="return confirm('Delete classroom ${escapeHtml(classroom.name)}? This cannot be undone.');">
           ${csrfHiddenInput(csrfToken)}
           <button type="submit" class="danger">Delete classroom</button>
         </form>
       </div>
-    `).join("")
-    : `<div class="panel"><p>No classrooms yet. Mint one below.</p></div>`;
+    `;
+    }).join("")
+    : `<div class="panel"><p>No classrooms yet. Create one below.</p></div>`;
 
   const body = `
     <div class="top">
@@ -637,15 +642,15 @@ function renderDashboardPage({
 
     <div class="panel">
       <h2>How students connect</h2>
-      <p>In the Vibbit extension, students enter only the <strong>5-letter classroom code</strong> from a classroom below.</p>
+      <p>In the shipped Vibbit extension, students enter only the <strong>10-letter classroom code</strong> (shown as <code>ABCDE-FGHIJ</code>) from a classroom below.</p>
       <p class="hint">Server is already set to <code>${escapeHtml(publicOrigin)}</code>. Optional join page: <code>${escapeHtml(publicOrigin)}/join/CODE</code>.</p>
     </div>
 
-    <h2>Credentials</h2>
+    <h2>AI accounts</h2>
     ${profileCards}
 
     <div class="panel">
-      <h2>Create a credential profile</h2>
+      <h2>Connect an AI account</h2>
       <form method="post" action="/teacher/profiles" data-profile-form>
         ${csrfHiddenInput(csrfToken)}
         <label>Profile name
@@ -675,7 +680,7 @@ function renderDashboardPage({
           Use as teacher default
         </label>
         <div class="actions row">
-          <button type="submit">Create profile</button>
+          <button type="submit">Save AI account</button>
         </div>
       </form>
     </div>
@@ -684,7 +689,7 @@ function renderDashboardPage({
     ${classroomCards}
 
     <div class="panel">
-      <h2>Mint a classroom</h2>
+      <h2>Create a classroom</h2>
       ${canMintClassroom
         ? `
           <form method="post" action="/teacher/classrooms">
@@ -692,7 +697,7 @@ function renderDashboardPage({
             <label>Classroom name
               <input type="text" name="name" value="My class" maxlength="120" required />
             </label>
-            <label>Credential profile
+            <label>AI account
               <select name="credentialProfileId">
                 ${classroomProfileOptions}
               </select>
@@ -701,11 +706,11 @@ function renderDashboardPage({
               <input type="text" name="modelOverride" value="" maxlength="160" placeholder="Leave blank to use the profile default" />
             </label>
             <div class="actions row">
-              <button type="submit">Mint classroom code</button>
+              <button type="submit">Create classroom</button>
             </div>
           </form>
         `
-        : `<p>Create a credential profile first, then mint classrooms that use it.</p>`}
+        : `<p>Connect an AI account first, then create classrooms that use it.</p>`}
     </div>
 
   `;
@@ -1170,12 +1175,14 @@ export function createTeacherPortal({
           try {
             await testCredentialProfileConnection(draftProfile, { outboundUrlPolicy });
             await store.updateCredentialProfile(teacher.id, profileId, {
+              ...profileInput,
               lastTestedAt: new Date().toISOString(),
               lastTestOk: true
             });
-            return redirectResponse("/teacher?notice=Credential%20profile%20test%20passed", { corsHeaders });
+            return redirectResponse("/teacher?notice=AI%20account%20tested%20and%20saved", { corsHeaders });
           } catch (testError) {
             await store.updateCredentialProfile(teacher.id, profileId, {
+              ...profileInput,
               lastTestedAt: new Date().toISOString(),
               lastTestOk: false
             });

@@ -1,4 +1,4 @@
-import { normaliseClassCode } from "./classroom-store.mjs";
+import { formatClassCode, normaliseClassCode } from "./classroom-store.mjs";
 
 export const JOIN_UNAVAILABLE_MARKER = "data-join-unavailable";
 
@@ -67,9 +67,9 @@ function joinShell({ title, body }) {
       .code-display {
         margin: 1.4rem 0;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: clamp(3.5rem, 14vw, 7rem);
+        font-size: clamp(2.2rem, 10vw, 4.5rem);
         font-weight: 800;
-        letter-spacing: 0.18em;
+        letter-spacing: 0.12em;
         color: var(--accent);
       }
       .server-url {
@@ -114,7 +114,7 @@ function joinShell({ title, body }) {
 
 export function resolveJoinAvailability(store, rawCode) {
   const code = normaliseClassCode(rawCode);
-  if (!code || code.length !== 5) {
+  if (!code) {
     return { available: false };
   }
   const state = store.getState();
@@ -123,7 +123,7 @@ export function resolveJoinAvailability(store, rawCode) {
   }
   const classroom = store.findClassroomByCode(code);
   if (classroom) {
-    return { available: true, code, classroom };
+    return { available: true, code: classroom.code, classroom };
   }
   return { available: false };
 }
@@ -140,23 +140,46 @@ export function renderJoinUnavailablePage() {
 
 export function renderJoinAvailablePage({
   code,
+  classroomName = "",
   publicOrigin,
+  codeOnly = false,
   bookmarkletPath = "/bookmarklet",
   extensionPath = "/download/vibbit-extension.zip"
 }) {
-  const body = `
-    <h1>Join this classroom</h1>
-    <p>Class code</p>
-    <div class="code-display">${escapeHtml(code)}</div>
-    <p>Server URL</p>
-    <div class="server-url">${escapeHtml(publicOrigin)}</div>
-    <div class="steps">
-      <p><strong>How to connect</strong></p>
+  const displayCode = formatClassCode(code);
+  const nameLine = classroomName
+    ? `<p><strong>${escapeHtml(classroomName)}</strong></p>`
+    : "";
+  const serverBlock = codeOnly
+    ? ""
+    : `
+      <p>Server URL</p>
+      <div class="server-url">${escapeHtml(publicOrigin)}</div>
+    `;
+  const steps = codeOnly
+    ? `
       <ol>
         <li>Open a MakeCode project in your browser.</li>
         <li>Install the <a href="${escapeHtml(extensionPath)}">Vibbit extension</a> or use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a>.</li>
-        <li>Choose <strong>Managed</strong> and enter the server URL and class code shown above.</li>
+        <li>Open Vibbit and enter the classroom code shown above.</li>
       </ol>
+    `
+    : `
+      <ol>
+        <li>Open a MakeCode project in your browser.</li>
+        <li>Install the <a href="${escapeHtml(extensionPath)}">Vibbit extension</a> or use the <a href="${escapeHtml(bookmarkletPath)}">bookmarklet</a>.</li>
+        <li>Choose <strong>Managed</strong>, then enter the server URL and classroom code shown above.</li>
+      </ol>
+    `;
+  const body = `
+    <h1>Join this classroom</h1>
+    ${nameLine}
+    <p>Classroom code</p>
+    <div class="code-display">${escapeHtml(displayCode)}</div>
+    ${serverBlock}
+    <div class="steps">
+      <p><strong>How to connect</strong></p>
+      ${steps}
     </div>
     <div class="links">
       <a class="btn" href="${escapeHtml(extensionPath)}">Download extension</a>

@@ -7,7 +7,7 @@ import {
 } from "./provider-registry.mjs";
 
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-const CLASS_CODE_LENGTH = 5;
+const CLASS_CODE_LENGTH = 10;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4o-mini";
 
@@ -46,6 +46,18 @@ export function normaliseClassCode(value) {
     .toUpperCase()
     .replace(/[^A-Z]/g, "")
     .slice(0, CLASS_CODE_LENGTH);
+}
+
+export function formatClassCode(value) {
+  const code = normaliseClassCode(value);
+  if (code.length === CLASS_CODE_LENGTH) {
+    return `${code.slice(0, 5)}-${code.slice(5)}`;
+  }
+  return code;
+}
+
+export function isCompleteClassCode(value) {
+  return normaliseClassCode(value).length === CLASS_CODE_LENGTH;
 }
 
 export function generateClassCode(length = CLASS_CODE_LENGTH) {
@@ -771,6 +783,8 @@ export function createTeacherPortalStore(initialState = {}, { persist } = {}) {
     countClassrooms: () => Object.keys(state.classrooms).length
   };
 }
+
+export { CLASS_CODE_LENGTH };
 
 export const TEACHER_PORTAL_DEFAULTS = {
   CLASS_CODE_LENGTH,

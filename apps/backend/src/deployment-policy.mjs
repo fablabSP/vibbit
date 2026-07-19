@@ -182,6 +182,8 @@ function firstHeaderToken(value) {
     .trim();
 }
 
+const ADAPTER_CLIENT_IP_HEADER = "x-vibbit-client-ip";
+
 export function resolveTrustedClientIp(request, deploymentPolicy) {
   if (deploymentPolicy.trustProxy) {
     const forwarded = String(request.headers.get("x-forwarded-for") || "")
@@ -191,7 +193,10 @@ export function resolveTrustedClientIp(request, deploymentPolicy) {
     // With one trusted reverse proxy, the rightmost address is the peer the proxy saw.
     if (forwarded.length) return forwarded[forwarded.length - 1];
   }
-  return "";
+  // Set only by the Node adapter after stripping any client-supplied value.
+  return String(request.headers.get(ADAPTER_CLIENT_IP_HEADER) || "").trim();
 }
+
+export { ADAPTER_CLIENT_IP_HEADER };
 
 export { MAKECODE_DEFAULT_ORIGINS, parseBoolean, parseCsv };

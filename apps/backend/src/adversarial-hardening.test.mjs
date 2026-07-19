@@ -15,7 +15,11 @@ import {
   isEncryptedEnvelope,
   parseEncryptionKey
 } from "./secret-box.mjs";
-import { createDeploymentPolicy } from "./deployment-policy.mjs";
+import {
+  ADAPTER_CLIENT_IP_HEADER,
+  createDeploymentPolicy,
+  resolveTrustedClientIp
+} from "./deployment-policy.mjs";
 import { JOIN_UNAVAILABLE_MARKER } from "./join-page.mjs";
 
 const TEST_KEY = Buffer.alloc(32, 3);
@@ -60,6 +64,65 @@ test("hosted mode rejects SERVER_APP_TOKEN at runtime boot", () => {
     }),
     /Hosted mode rejects SERVER_APP_TOKEN/
   );
+});
+
+test("adapter client IP header is used when trust proxy is off", async () => {
+  const runtime = createBackendRuntime({
+    env: {
+      VIBBIT_CLASSROOM_ENABLED: "true",
+      VIBBIT_CLASSROOM_CODE: "ABCDE",
+      VIBBIT_CLASSROOM_CODE_AUTO: "false",
+      VIBBIT_TRUST_PROXY: "false",
+      VIBBIT_TEACHER_DEV_LOGIN: "true",
+      VIBBIT_OPENAI_API_KEY: "server-key",
+      VIBBIT_RATE_CONNECT_PER_IP_PER_MIN: "2",
+      VIBBIT_RATE_CONNECT_GLOBAL_PER_MIN: "100"
+    },
+    teacherPortalState: {},
+    persistTeacherPortalState: async () => {},
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
+  });
+
+  for (let i = 0; i < 2; i += 1) {
+    const ok = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [ADAPTER_CLIENT_IP_HEADER]: "198.51.100.10"
+      },
+      body: JSON.stringify({ classCode: "ABCDE" })
+    }));
+    assert.equal(ok.status, 200);
+  }
+
+  const limited = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      [ADAPTER_CLIENT_IP_HEADER]: "198.51.100.10"
+    },
+    body: JSON.stringify({ classCode: "ABCDE" })
+  }));
+  assert.equal(limited.status, 429);
+
+  const otherPeer = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      [ADAPTER_CLIENT_IP_HEADER]: "198.51.100.11"
+    },
+    body: JSON.stringify({ classCode: "ABCDE" })
+  }));
+  assert.equal(otherPeer.status, 200);
+
+  const policy = createDeploymentPolicy({ VIBBIT_TRUST_PROXY: "false" });
+  const spoofed = new Request("https://example.test/", {
+    headers: {
+      "x-forwarded-for": "1.2.3.4",
+      [ADAPTER_CLIENT_IP_HEADER]: "203.0.113.9"
+    }
+  });
+  assert.equal(resolveTrustedClientIp(spoofed, policy), "203.0.113.9");
 });
 
 test("trusted client IP uses the rightmost X-Forwarded-For hop", async () => {

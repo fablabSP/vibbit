@@ -40,7 +40,7 @@ const MAX_CURRENT_CODE_CHARS = 50000;
 const MAX_PAGE_ERROR_CHARS = 500;
 const MAX_UPSTREAM_ATTEMPTS = 3;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-const CLASS_CODE_LENGTH = 5;
+const CLASS_CODE_LENGTH = 10;
 const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
 const BOOKMARKLET_INSTALL_ROUTE = "/bookmarklet";
 const EXTENSION_DOWNLOAD_ROUTE = "/download/vibbit-extension.zip";
@@ -1627,7 +1627,7 @@ export function createBackendRuntime(options = {}) {
     const clientIp = resolveTrustedClientIp(request, deployment) || "local";
     const connectLimit = rateLimits.checkConnect({ clientIp });
     if (!connectLimit.ok) {
-      await usageStore.recordRateLimited("legacy");
+      // Do not persist rejected-connect metrics — that amplifies disk writes under flood.
       return respondRateLimited(origin, connectLimit);
     }
 
@@ -1635,6 +1635,7 @@ export function createBackendRuntime(options = {}) {
     const body = await readJson(request, 16 * 1024);
     const providedCode = body && (body.classCode || body.code);
     let classroomId = "";
+    let classroomName = "";
     let sessionMeta = null;
     let publicProviderConfig = getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig());
 
@@ -1660,6 +1661,7 @@ export function createBackendRuntime(options = {}) {
           }, origin, runtimeConfig);
         }
         classroomId = teacherClassroom.id;
+        classroomName = String(teacherClassroom.name || "").trim().slice(0, 120);
         publicProviderConfig = getPublicServerConfig(
           runtimeConfig,
           createProviderConfigFromCredentialProfile(effectiveProfile, {
@@ -1686,6 +1688,7 @@ export function createBackendRuntime(options = {}) {
     return respondJson(200, {
       ok: true,
       ...publicProviderConfig,
+      ...(classroomName ? { classroomName } : {}),
       sessionToken: session.token,
       expiresAt: new Date(session.expiresAt).toISOString()
     }, origin, runtimeConfig);
@@ -1813,7 +1816,7 @@ export function createBackendRuntime(options = {}) {
       if (teacherResponse) return teacherResponse;
     }
 
-    const joinMatch = pathname.match(/^\/join\/([A-Za-z0-9]{5})$/);
+    const joinMatch = pathname.match(/^\/join\/([A-Za-z0-9-]{3,24})$/);
     if (joinMatch && request.method === "GET") {
       const corsHeaders = buildCorsHeaders(origin, runtimeConfig);
       const clientIp = resolveTrustedClientIp(request, deployment) || "local";
@@ -1834,7 +1837,9 @@ export function createBackendRuntime(options = {}) {
       const html = availability.available
         ? renderJoinAvailablePage({
           code: availability.code,
+          classroomName: availability.classroom && availability.classroom.name,
           publicOrigin: publicOriginFor(request, requestUrl),
+          codeOnly: deployment.mode === "hosted",
           bookmarkletPath: BOOKMARKLET_INSTALL_ROUTE,
           extensionPath: EXTENSION_DOWNLOAD_ROUTE
         })

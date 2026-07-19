@@ -204,7 +204,7 @@ Classroom auth:
 - `VIBBIT_CLASSROOM_ENABLED` (default `true` unless `SERVER_APP_TOKEN` is set)
 - `VIBBIT_CLASSROOM_CODE` (optional legacy fixed code)
 - `VIBBIT_CLASSROOM_CODE_AUTO` (default `true`; legacy auto code for simple single-tenant setups)
-- `VIBBIT_CLASSROOM_CODE_LENGTH` (default `5`; classroom codes are 5 uppercase letters)
+- `VIBBIT_CLASSROOM_CODE_LENGTH` (default `10`; teacher-minted codes are 10 unambiguous letters, shown as `ABCDE-FGHIJ`)
 - `VIBBIT_CLASSROOM_SEED` (optional deterministic seed for legacy auto code)
 - `VIBBIT_SESSION_TTL_MS` (default `28800000` = 8h)
 

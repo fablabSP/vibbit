@@ -65,13 +65,13 @@ test("teacher can sign in locally, create a credential profile, mint a classroom
   }));
   assert.equal(dashboard.status, 200);
   const html = await dashboard.text();
-  assert.match(html, /Credentials/);
+  assert.match(html, /AI accounts/);
   assert.match(html, /School OpenAI/);
   assert.match(html, /Period 3/);
   assert.match(html, /Classroom code:/);
-  const codeMatch = html.match(/class="code code-lg">([A-Z]{5})</);
+  const codeMatch = html.match(/class="code code-lg">([A-Z]{5}-[A-Z]{5})</);
   assert.ok(codeMatch, "expected minted classroom code in dashboard");
-  const classCode = codeMatch[1];
+  const classCode = codeMatch[1].replace(/-/g, "");
 
   const connect = await runtime.fetch(new Request("https://example.test/vibbit/connect", {
     method: "POST",
@@ -85,6 +85,7 @@ test("teacher can sign in locally, create a credential profile, mint a classroom
   const connected = await connect.json();
   assert.equal(connected.ok, true);
   assert.ok(connected.sessionToken);
+  assert.equal(connected.classroomName, "Period 3");
   assert.equal(connected.defaultModel, "gpt-4o-mini");
 });
 

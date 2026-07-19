@@ -9,8 +9,8 @@ This repo ships one Vibbit runtime supporting both:
 
 1. Teacher runs or deploys the backend (`apps/backend/`).
 2. Teacher opens `/teacher`, signs in (Google or local/dev login), and saves an OpenAI-compatible API base URL + key.
-3. Teacher mints a classroom code and shares the 5-letter code (and optionally `/join/CODE`).
-4. Students open Vibbit in MakeCode and enter the classroom code (the shipped extension bakes `https://vibbit.tk.sg` and hides the server URL).
+3. Teacher creates a classroom and shares the 10-letter code (shown as `ABCDE-FGHIJ`, optionally via `/join/CODE`).
+4. Students open Vibbit in MakeCode and enter the classroom code. The production package (`npm run package`) is code-only against `https://vibbit.tk.sg`; ordinary `npm run build` keeps Managed + BYOK.
 5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
 6. Provider keys stay on the server (per classroom). Optional operator panel: `/admin?admin=<ADMINTOKEN>`.
 
@@ -226,13 +226,13 @@ Then:
    - `dist/content-script.js`
    - `dist/manifest.json`
    - `artifacts/vibbit-extension.zip`
-3. Managed checks (hosted/code-only default):
+3. Managed checks after `npm run package` (hosted/code-only):
    - enter classroom code only (server URL hidden; baked `https://vibbit.tk.sg`)
    - generate and verify paste + `Revert`
    - test error-aware flow (empty prompt + page errors)
    - trigger conversion modal and verify retry + `Fix convert error`
-4. BYOK checks (only when built with `VIBBIT_HOSTED_MANAGED=false`):
-   - provider + model + key
+4. BYOK checks after `npm run build` (neutral dual-mode):
+   - mode toggle, provider + model + key
    - generation, paste, and error-context fixing
 5. Reload extension and refresh MakeCode tabs after each build
 

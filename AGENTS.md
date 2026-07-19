@@ -19,15 +19,17 @@ This repository ships one school-facing runtime that supports both:
 
 Use this exact flow when asked to prepare a testable build:
 
-1. Build:
+1. Neutral dual-mode build (Managed + BYOK):
    - `npm run build`
-2. Package:
-   - `npm run package`
+2. Production code-only package (hosted Managed against `https://vibbit.tk.sg`):
+   - `npm run package` (uses `VIBBIT_BUILD_PROFILE=hosted-managed`)
 3. Verify outputs:
    - `dist/content-script.js`
    - `dist/manifest.json`
    - `artifacts/vibbit-extension.zip`
 4. For local browser testing, load unpacked from `dist/` at `chrome://extensions`.
+   - Neutral: `npm run build` then load `dist/`
+   - Hosted/code-only: `npm run build:hosted` or `npm run package` then load `dist/`
 
 ## Bookmarklet build flow
 

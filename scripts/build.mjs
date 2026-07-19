@@ -60,11 +60,6 @@ function readConstString(source, name) {
   return match ? match[1] : "";
 }
 
-function readConstBoolean(source, name) {
-  const match = source.match(new RegExp(`const ${name} = (true|false);`));
-  return match ? match[1] === "true" : false;
-}
-
 async function build() {
   const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
@@ -89,15 +84,14 @@ async function build() {
     if (appToken) {
       throw new Error("VIBBIT_BUILD_PROFILE=hosted-managed rejects VIBBIT_APP_TOKEN");
     }
-    builtClient = overrideConst(builtClient, "HOSTED_MANAGED", true);
     backend = String(backend).trim();
   }
 
-  const sourceHostedManaged = readConstBoolean(builtClient, "HOSTED_MANAGED");
-  const hostedManagedEnabled = parseBoolean(
-    process.env.VIBBIT_HOSTED_MANAGED,
-    hostedManagedProfile || sourceHostedManaged
-  );
+  // Ordinary builds stay dual-mode (Managed + BYOK). Code-only distribution requires an
+  // explicit profile or VIBBIT_HOSTED_MANAGED=true — never inherit a source-level true.
+  const hostedManagedEnabled = hostedManagedProfile
+    ? true
+    : parseBoolean(process.env.VIBBIT_HOSTED_MANAGED, false);
   builtClient = overrideConst(builtClient, "HOSTED_MANAGED", hostedManagedEnabled);
 
   if (backend) {
