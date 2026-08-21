@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+command -v node >/dev/null 2>&1 || {
+  echo "Node.js is missing; run .agents/setup." >&2
+  exit 1
+}
+
+if [[ ! -x node_modules/.bin/playwright ]]; then
+  echo "npm dependencies are missing; run .agents/setup." >&2
+  exit 1
+fi
+
+node -e 'require("playwright")'
+echo "Orb resume check complete; no services need restarting."

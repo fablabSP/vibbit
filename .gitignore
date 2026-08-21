@@ -15,3 +15,6 @@ docker-compose.yml
 
 # Claude Code settings
 .codex/
+
+# Amp orb portal metadata
+.amp/portals/*
