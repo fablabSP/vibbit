@@ -34,6 +34,7 @@
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://openrouter.ai/*",
+    "https://opencode.ai/*",
     "https://makecode.microbit.org/*",
     "https://arcade.makecode.com/*",
     "https://maker.makecode.com/*"

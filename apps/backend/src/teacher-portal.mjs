@@ -543,7 +543,7 @@ function renderLoginPage({
     ${devBlock}
     <div class="panel">
       <h2>AI providers</h2>
-      <p class="hint">OpenAI, OpenRouter, Gemini, or (advanced) a custom OpenAI-compatible gateway.</p>
+      <p class="hint">OpenAI, OpenRouter, OpenCode Go/Zen, Gemini, or (advanced) a custom OpenAI-compatible gateway.</p>
     </div>
   `;
 

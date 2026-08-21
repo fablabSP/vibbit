@@ -130,17 +130,21 @@ export function providerConfigFromEnv() {
     process.env.AUDIT_BYOK_OPENAI_KEY ? "openai" :
     process.env.AUDIT_BYOK_GEMINI_KEY ? "gemini" :
     process.env.AUDIT_BYOK_OPENROUTER_KEY ? "openrouter" :
+    process.env.AUDIT_BYOK_OPENCODE_KEY ? "opencode" :
     ""
   );
 
   if (!provider) return null;
 
   if (provider === "openai") {
+    const model = process.env.AUDIT_BYOK_OPENAI_MODEL || "gpt-5.6-luna";
     return {
       provider,
       key: process.env.AUDIT_BYOK_OPENAI_KEY || "",
-      model: process.env.AUDIT_BYOK_OPENAI_MODEL || "gpt-4o-mini",
-      endpointRegex: /^https:\/\/api\.openai\.com\/v1\/chat\/completions$/
+      model,
+      endpointRegex: model === "gpt-5.6-luna"
+        ? /^https:\/\/api\.openai\.com\/v1\/responses$/
+        : /^https:\/\/api\.openai\.com\/v1\/chat\/completions$/
     };
   }
 
@@ -158,8 +162,19 @@ export function providerConfigFromEnv() {
     return {
       provider,
       key: process.env.AUDIT_BYOK_OPENROUTER_KEY || "",
-      model: process.env.AUDIT_BYOK_OPENROUTER_MODEL || "openrouter/auto",
+      model: process.env.AUDIT_BYOK_OPENROUTER_MODEL || "openai/gpt-5.6-luna",
       endpointRegex: /^https:\/\/openrouter\.ai\/api\/v1\/chat\/completions$/
+    };
+  }
+
+  if (provider === "opencode") {
+    const model = process.env.AUDIT_BYOK_OPENCODE_MODEL || "go/responses/gpt-5.6-luna";
+    const access = model.startsWith("zen/") ? "zen" : "zen/go";
+    return {
+      provider,
+      key: process.env.AUDIT_BYOK_OPENCODE_KEY || "",
+      model,
+      endpointRegex: new RegExp(`^https://opencode\\.ai/${access}/v1/(?:chat/completions|responses)$`)
     };
   }
 

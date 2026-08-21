@@ -212,6 +212,7 @@ function byokKeyForProvider(provider) {
   if (provider === "openai") return process.env.AUDIT_BYOK_OPENAI_KEY || "";
   if (provider === "gemini") return process.env.AUDIT_BYOK_GEMINI_KEY || "";
   if (provider === "openrouter") return process.env.AUDIT_BYOK_OPENROUTER_KEY || "";
+  if (provider === "opencode") return process.env.AUDIT_BYOK_OPENCODE_KEY || "";
   return "";
 }
 

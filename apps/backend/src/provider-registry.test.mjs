@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { callManagedProvider } from "./provider-registry.mjs";
+import { callManagedProvider, defaultModelForCredentialProvider } from "./provider-registry.mjs";
+
+test("GPT-5.6 Luna is the default wherever it is available", () => {
+  assert.equal(defaultModelForCredentialProvider("openai"), "gpt-5.6-luna");
+  assert.equal(defaultModelForCredentialProvider("openrouter"), "openai/gpt-5.6-luna");
+  assert.equal(defaultModelForCredentialProvider("opencode"), "gpt-5.6-luna");
+  assert.equal(defaultModelForCredentialProvider("custom"), "gpt-4o-mini");
+});
 
 test("callManagedProvider sends Gemini API key in x-goog-api-key header", async () => {
   let capturedUrl = "";
@@ -35,4 +42,152 @@ test("callManagedProvider sends Gemini API key in x-goog-api-key header", async 
   assert.equal(parsed.searchParams.has("key"), false);
   assert.ok(!capturedUrl.includes("key="));
   assert.equal(capturedHeaders["x-goog-api-key"], "gem-key");
+});
+
+test("callManagedProvider sends OpenCode chat models to the Go gateway", async () => {
+  let capturedUrl = "";
+  let capturedBody = null;
+
+  const text = await callManagedProvider({
+    provider: "opencode",
+    apiKey: "open-code-key",
+    model: "hy3",
+    system: "system prompt",
+    user: "user prompt",
+    fetchImpl: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "generated text" } }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+
+  assert.equal(capturedUrl, "https://opencode.ai/zen/go/v1/chat/completions");
+  assert.equal(capturedBody.model, "hy3");
+  assert.deepEqual(capturedBody.reasoning, { effort: "none" });
+  assert.equal(text, "generated text");
+});
+
+test("callManagedProvider uses the required temperature for OpenCode Kimi models", async () => {
+  let capturedBody = null;
+  await callManagedProvider({
+    provider: "opencode",
+    apiKey: "open-code-key",
+    model: "go/kimi-k3",
+    temperature: 0.1,
+    fetchImpl: async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+  assert.equal(capturedBody.temperature, 1);
+  assert.equal(capturedBody.model, "kimi-k3");
+});
+
+test("callManagedProvider routes prefixed OpenCode Zen models to Zen", async () => {
+  let capturedUrl = "";
+  let capturedBody = null;
+
+  await callManagedProvider({
+    provider: "opencode",
+    apiKey: "open-code-key",
+    model: "zen/hy3-free",
+    fetchImpl: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+
+  assert.equal(capturedUrl, "https://opencode.ai/zen/v1/chat/completions");
+  assert.equal(capturedBody.model, "hy3-free");
+  assert.deepEqual(capturedBody.reasoning, { effort: "none" });
+});
+
+test("callManagedProvider uses OpenCode Responses API for Muse Contributor", async () => {
+  let capturedUrl = "";
+  let capturedBody = null;
+
+  const text = await callManagedProvider({
+    provider: "opencode",
+    apiKey: "open-code-key",
+    model: "muse-spark-1.2-contributor",
+    system: "system prompt",
+    user: "user prompt",
+    fetchImpl: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        output: [{ content: [{ type: "output_text", text: "generated text" }] }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+
+  assert.equal(capturedUrl, "https://opencode.ai/zen/go/v1/responses");
+  assert.equal(capturedBody.model, "muse-spark-1.2-contributor");
+  assert.equal(capturedBody.max_output_tokens, 3072);
+  assert.equal(text, "generated text");
+});
+
+test("callManagedProvider uses OpenAI Responses API without temperature for GPT-5.6 Luna", async () => {
+  let capturedUrl = "";
+  let capturedBody = null;
+
+  const text = await callManagedProvider({
+    provider: "openai",
+    apiKey: "open-ai-key",
+    model: "gpt-5.6-luna",
+    system: "system prompt",
+    user: "user prompt",
+    fetchImpl: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ output_text: "generated text" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+
+  assert.equal(capturedUrl, "https://api.openai.com/v1/responses");
+  assert.equal(capturedBody.model, "gpt-5.6-luna");
+  assert.equal(capturedBody.temperature, undefined);
+  assert.equal(capturedBody.max_output_tokens, 3072);
+  assert.equal(text, "generated text");
+});
+
+test("callManagedProvider uses OpenRouter GPT-5.6 Luna without temperature", async () => {
+  let capturedUrl = "";
+  let capturedBody = null;
+
+  await callManagedProvider({
+    provider: "openrouter",
+    apiKey: "open-router-key",
+    model: "openai/gpt-5.6-luna",
+    fetchImpl: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "generated text" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+
+  assert.equal(capturedUrl, "https://openrouter.ai/api/v1/chat/completions");
+  assert.equal(capturedBody.model, "openai/gpt-5.6-luna");
+  assert.equal(capturedBody.temperature, undefined);
 });

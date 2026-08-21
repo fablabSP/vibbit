@@ -21,6 +21,8 @@ export const BUILTIN_ENDPOINT_ALLOWLIST = [
   "api.openai.com",
   "openrouter.ai",
   "*.openrouter.ai",
+  "opencode.ai",
+  "*.opencode.ai",
   "generativelanguage.googleapis.com",
   "api.anthropic.com"
 ];

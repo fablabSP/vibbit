@@ -14,7 +14,8 @@ const frogDataUriToken = "__VIBBIT_FROG_MARK_DATA_URI__";
 const byokHostPermissions = [
   "https://api.openai.com/*",
   "https://generativelanguage.googleapis.com/*",
-  "https://openrouter.ai/*"
+  "https://openrouter.ai/*",
+  "https://opencode.ai/*"
 ];
 
 const makecodeHostPermissions = [

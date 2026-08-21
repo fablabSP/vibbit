@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "description": "Vibbit MakeCode generation and repair evaluation corpus. Criteria are intentionally conservative prechecks; MakeCode compile/decompile is the ground truth.",
+  "cases": [
+    {
+      "id": "microbit-simple-icon",
+      "target": "microbit",
+      "category": "simple-generation",
+      "request": "Show the built-in duck icon, pause for one second, then clear the screen.",
+      "required": ["basic\\.showIcon\\(IconNames\\.Duck\\)", "basic\\.pause\\(1000\\)", "basic\\.clearScreen\\(\\)"],
+      "forbidden": ["showLeds", "sprites\\.", "controller\\."]
+    },
+    {
+      "id": "microbit-event-handler",
+      "target": "microbit",
+      "category": "event-handlers",
+      "request": "When button A is pressed show a heart. When button B is pressed clear the screen.",
+      "required": ["input\\.onButtonPressed\\(Button\\.A", "IconNames\\.Heart", "input\\.onButtonPressed\\(Button\\.B", "basic\\.clearScreen"],
+      "forbidden": ["if\\s*\\(input\\.buttonIsPressed", "controller\\."]
+    },
+    {
+      "id": "microbit-state-counter",
+      "target": "microbit",
+      "category": "state",
+      "request": "Start a score at zero. Button A adds one and shows it. Button B resets it to zero and shows zero.",
+      "required": ["let\\s+[A-Za-z_]\\w*\\s*=\\s*0", "Button\\.A", "\\+=\\s*1", "Button\\.B", "=\\s*0", "basic\\.showNumber"],
+      "forbidden": ["const\\s", "var\\s"]
+    },
+    {
+      "id": "microbit-compile-repair",
+      "target": "microbit",
+      "category": "error-repair",
+      "request": "Fix every reported error and preserve the intended button behaviour.",
+      "currentCode": "let count = 0\ninput.onButtonPressed(Button.C, function () {\n    count += 1\n    basic.showNumber(count, 100)\n})",
+      "pageErrors": ["Property 'C' does not exist on type 'typeof Button'.", "Expected 1 arguments, but got 2."],
+      "required": ["Button\\.(A|B|AB)", "basic\\.showNumber\\([^,\\n]+\\)"],
+      "forbidden": ["Button\\.C", "showNumber\\([^\\n]*,"]
+    },
+    {
+      "id": "microbit-conversion-repair",
+      "target": "microbit",
+      "category": "conversion-error-repair",
+      "request": "Fix the current JavaScript so it converts fully to native Blocks without changing the list of numbers shown.",
+      "currentCode": "let values = [1, 2, 3]\nvalues.forEach((value) => {\n    basic.showNumber(value)\n})",
+      "conversionDialog": {"title": "Problem converting your code", "description": "Some JavaScript features cannot be converted to blocks."},
+      "required": ["let\\s+values\\s*=\\s*\\[1,\\s*2,\\s*3\\]", "for\\s*\\(let\\s+[^)]*\\sof\\svalues\\)", "basic\\.showNumber"],
+      "forbidden": ["=>", "\\.forEach\\("]
+    },
+    {
+      "id": "microbit-adherence-radio",
+      "target": "microbit",
+      "category": "prompt-adherence",
+      "request": "Set radio group 17. Send the string GO only when buttons A+B are pressed. Do not display anything and do not use a forever loop.",
+      "required": ["radio\\.setGroup\\(17\\)", "Button\\.AB", "radio\\.sendString\\(\"GO\"\\)"],
+      "forbidden": ["basic\\.show", "basic\\.forever", "loops\\.forever"]
+    },
+    {
+      "id": "microbit-unsupported-api",
+      "target": "microbit",
+      "category": "unsupported-apis",
+      "request": "Make button A choose randomly between showing the built-in YES and NO icons using only built-in micro:bit APIs. Do not use Math.random, randint, extensions, or custom namespaces.",
+      "required": ["Button\\.A", "_pickRandom\\(\\)", "IconNames\\.(Yes|No)"],
+      "forbidden": ["Math\\.random", "randint", "namespace\\s", "neopixel\\."]
+    },
+    {
+      "id": "microbit-native-blocks-trap",
+      "target": "microbit",
+      "category": "decompile-traps",
+      "request": "Rewrite this valid-looking TypeScript into native Blocks-compatible code while preserving: pressing A shows twice the temperature.",
+      "currentCode": "const twice = (n: number) => n * 2\ninput.onButtonPressed(Button.A, () => basic.showNumber(twice(input.temperature())))",
+      "conversionDialog": {"title": "Problem converting your code", "description": "This code contains JavaScript that has no block representation."},
+      "required": ["Button\\.A", "input\\.temperature\\(\\)", "basic\\.showNumber"],
+      "forbidden": ["=>", "const\\s"]
+    },
+
+    {
+      "id": "arcade-simple-player",
+      "target": "arcade",
+      "category": "simple-generation",
+      "request": "Create one Player sprite, move it with the controller at speed 80 in both directions, and keep it on screen.",
+      "required": ["sprites\\.create\\(", "SpriteKind\\.Player", "controller\\.moveSprite\\([^,]+,\\s*80,\\s*80\\)", "setStayInScreen\\(true\\)"],
+      "forbidden": ["basic\\.", "radio\\."]
+    },
+    {
+      "id": "arcade-event-handler",
+      "target": "arcade",
+      "category": "event-handlers",
+      "request": "Create a Player sprite. Each press of controller A increases the score by exactly 1.",
+      "required": ["SpriteKind\\.Player", "controller\\.A\\.onEvent\\(ControllerButtonEvent\\.Pressed", "info\\.changeScoreBy\\(1\\)"],
+      "forbidden": ["input\\.onButtonPressed", "game\\.score"]
+    },
+    {
+      "id": "arcade-state-lives",
+      "target": "arcade",
+      "category": "state",
+      "request": "Start with 3 lives and a score of 0. Every two seconds add 5 points. End the game as a win when the score reaches 20.",
+      "required": ["info\\.setLife\\(3\\)", "info\\.setScore\\(0\\)", "game\\.onUpdateInterval\\(2000", "info\\.changeScoreBy\\(5\\)", "info\\.score\\(\\)\\s*>=?\\s*20", "game\\.over\\(true\\)"],
+      "forbidden": ["setInterval", "while\\s*\\("]
+    },
+    {
+      "id": "arcade-compile-repair",
+      "target": "arcade",
+      "category": "error-repair",
+      "request": "Fix the compile errors while preserving a player that moves with the controller and gains one point on A.",
+      "currentCode": "let player = sprites.create(img`.`, SpriteKind.Player)\ncontroller.moveSprite(player, 100, 100, 100)\ncontroller.A.onEvent(ButtonEvent.Clicked, function () {\n    game.addScore(1)\n})",
+      "pageErrors": ["Expected 1-3 arguments, but got 4.", "Cannot find name 'ButtonEvent'.", "Property 'addScore' does not exist on type 'typeof game'."],
+      "required": ["controller\\.moveSprite\\([^,]+,\\s*100,\\s*100\\)", "ControllerButtonEvent\\.Pressed", "info\\.changeScoreBy\\(1\\)"],
+      "forbidden": ["ButtonEvent", "game\\.addScore", "moveSprite\\([^\\n]*,[^\\n]*,[^\\n]*,"]
+    },
+    {
+      "id": "arcade-conversion-repair",
+      "target": "arcade",
+      "category": "conversion-error-repair",
+      "request": "Convert this to native Blocks-compatible Arcade code. Preserve the three background colours changing once per second.",
+      "currentCode": "const colours = [2, 4, 9]\nlet index = 0\nsetInterval(() => {\n    scene.setBackgroundColor(colours[index % colours.length])\n    index++\n}, 1000)",
+      "conversionDialog": {"title": "Problem converting your code", "description": "setInterval and arrow functions cannot be converted."},
+      "required": ["let\\s+colours\\s*=", "game\\.onUpdateInterval\\(1000", "scene\\.setBackgroundColor"],
+      "forbidden": ["const\\s", "setInterval", "=>"]
+    },
+    {
+      "id": "arcade-adherence-overlap",
+      "target": "arcade",
+      "category": "prompt-adherence",
+      "request": "Create one Player and one Food sprite. On Player-Food overlap add 2 points and destroy only the Food sprite. Do not change lives and do not end the game.",
+      "required": ["SpriteKind\\.Player", "SpriteKind\\.Food", "sprites\\.onOverlap\\(SpriteKind\\.Player,\\s*SpriteKind\\.Food", "info\\.changeScoreBy\\(2\\)", "destroy\\(\\)"],
+      "forbidden": ["changeLifeBy", "setLife", "game\\.over"]
+    },
+    {
+      "id": "arcade-unsupported-api",
+      "target": "arcade",
+      "category": "unsupported-apis",
+      "request": "Make a Player sprite follow controller input and bounce on the screen edges using standard Arcade blocks only. Do not use browser keyboard APIs or requestAnimationFrame.",
+      "required": ["SpriteKind\\.Player", "controller\\.moveSprite", "setBounceOnWall\\(true\\)"],
+      "forbidden": ["addEventListener", "requestAnimationFrame", "window\\.", "document\\."]
+    },
+    {
+      "id": "arcade-native-blocks-trap",
+      "target": "arcade",
+      "category": "decompile-traps",
+      "request": "Rewrite this into fully native Arcade Blocks. Preserve that pressing A adds 10 to score when score is below 50, otherwise wins the game.",
+      "currentCode": "controller.A.onEvent(ControllerButtonEvent.Pressed, () => {\n    info.score() < 50 ? info.changeScoreBy(10) : game.over(true)\n})",
+      "conversionDialog": {"title": "Problem converting your code", "description": "Some JavaScript will be shown as grey blocks."},
+      "required": ["controller\\.A\\.onEvent", "if\\s*\\(info\\.score\\(\\)\\s*<\\s*50\\)", "info\\.changeScoreBy\\(10\\)", "game\\.over\\(true\\)"],
+      "forbidden": ["=>", "\\?[^\\n:]+:"]
+    },
+
+    {
+      "id": "maker-simple-led",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "simple-generation",
+      "request": "On Adafruit Circuit Playground Express, blink the built-in LED: on for 500 ms, off for 500 ms, forever.",
+      "required": ["forever\\(function", "pins\\.LED\\.digitalWrite\\(true\\)", "pins\\.LED\\.digitalWrite\\(false\\)", "pause\\(500\\)"],
+      "forbidden": ["basic\\.", "loops\\.", "DigitalPin", "sprites\\."]
+    },
+    {
+      "id": "maker-event-handler",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "event-handlers",
+      "request": "On Adafruit Circuit Playground Express, when built-in button A is clicked, turn the built-in LED on, pause 200 ms, then turn it off.",
+      "required": ["input\\.buttonA\\.onEvent\\(ButtonEvent\\.Click", "pins\\.LED\\.digitalWrite\\(true\\)", "pause\\(200\\)", "pins\\.LED\\.digitalWrite\\(false\\)"],
+      "forbidden": ["input\\.onButtonPressed", "Button\\.A", "loops\\.", "controller\\."]
+    },
+    {
+      "id": "maker-state-toggle",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "state",
+      "request": "On Adafruit Circuit Playground Express, keep a boolean state. Each click of built-in button A toggles it and writes that state to the built-in LED.",
+      "required": ["let\\s+[A-Za-z_]\\w*\\s*=\\s*false", "input\\.buttonA\\.onEvent\\(ButtonEvent\\.Click", "=\\s*!", "pins\\.LED\\.digitalWrite\\("],
+      "forbidden": ["const\\s", "input\\.onButtonPressed", "DigitalPin"]
+    },
+    {
+      "id": "maker-compile-repair",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "error-repair",
+      "request": "Fix all errors for Adafruit Circuit Playground Express. Preserve reading analog A3 and writing the value to analog output A0 forever with a 100 ms pause.",
+      "currentCode": "loops.forever(function () {\n    let value = pins.analogReadPin(AnalogPin.A3)\n    pins.analogWritePin(AnalogPin.A0, value)\n    loops.pause(100)\n})",
+      "pageErrors": ["Cannot find name 'AnalogPin'.", "Property 'analogReadPin' does not exist on type 'typeof pins'.", "Property 'analogWritePin' does not exist on type 'typeof pins'."],
+      "required": ["forever\\(function", "pins\\.A3\\.analogRead\\(\\)", "pins\\.A0\\.analogWrite\\(", "pause\\(100\\)"],
+      "forbidden": ["loops\\.", "AnalogPin", "analogReadPin", "analogWritePin"]
+    },
+    {
+      "id": "maker-conversion-repair",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "conversion-error-repair",
+      "request": "On Adafruit Circuit Playground Express, rewrite as native Maker Blocks while preserving cycling analog output A0 through 0, 256, 512, and 768.",
+      "currentCode": "const levels = [0, 256, 512, 768]\nlevels.forEach(level => pins.A0.analogWrite(level))",
+      "conversionDialog": {"title": "Problem converting your code", "description": "Arrow functions and forEach have no native block conversion."},
+      "required": ["let\\s+levels\\s*=", "for\\s*\\(let\\s+[^)]*\\sof\\slevels\\)", "pins\\.A0\\.analogWrite\\("],
+      "forbidden": ["const\\s", "=>", "\\.forEach\\("]
+    },
+    {
+      "id": "maker-adherence-servo",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "prompt-adherence",
+      "request": "On Adafruit Circuit Playground Express, move a servo on A1 to 30 degrees, wait exactly one second, then move it to 150 degrees. Do this once only, not forever.",
+      "required": ["pins\\.A1\\.servoWrite\\(30\\)", "pause\\(1000\\)", "pins\\.A1\\.servoWrite\\(150\\)"],
+      "forbidden": ["forever", "loops\\.", "AnalogPin", "servoWritePin"]
+    },
+    {
+      "id": "maker-unsupported-api",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "unsupported-apis",
+      "request": "On Adafruit Circuit Playground Express, read analog A3, scale 0-1023 to 0-180 with block-safe arithmetic, and write that angle to a servo on A1. Do not invent a pins.map API.",
+      "required": ["pins\\.A3\\.analogRead\\(\\)", "\\*\\s*180\\s*/\\s*1023", "pins\\.A1\\.servoWrite\\("],
+      "forbidden": ["pins\\.map", "AnalogPin", "analogReadPin", "servoWritePin", "basic\\."]
+    },
+    {
+      "id": "maker-native-blocks-trap",
+      "target": "maker",
+      "targetBoard": "adafruit-circuit-playground-express",
+      "category": "decompile-traps",
+      "request": "On Adafruit Circuit Playground Express, rewrite into native Maker Blocks. Preserve continuously turning the built-in LED on when Celsius temperature is above 25, otherwise off.",
+      "currentCode": "forever(() => pins.LED.digitalWrite(input.temperature(TemperatureUnit.Celsius) > 25 ? true : false))",
+      "conversionDialog": {"title": "Problem converting your code", "description": "Arrow and conditional expressions cannot become native blocks."},
+      "required": ["forever\\(function", "input\\.temperature\\(TemperatureUnit\\.Celsius\\)\\s*>\\s*25", "if\\s*\\(", "pins\\.LED\\.digitalWrite\\((true|false)\\)"],
+      "forbidden": ["=>", "\\?[^\\n:]+:", "DigitalPin", "loops\\."]
+    }
+  ]
+}

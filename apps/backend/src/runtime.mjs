@@ -33,7 +33,7 @@ import { createRateLimitController } from "./rate-limit.mjs";
 import { createUsageStore } from "./usage-store.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
-const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
+const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter", "opencode"];
 const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_REQUEST_CHARS = 4000;
@@ -192,16 +192,18 @@ function generateClassCodeFromSeed(seed, length) {
 }
 
 function resolveModelForProvider(env, provider) {
-  if (provider === "openai") return env.VIBBIT_OPENAI_MODEL || env.VIBBIT_MODEL || "gpt-4o-mini";
+  if (provider === "openai") return env.VIBBIT_OPENAI_MODEL || env.VIBBIT_MODEL || "gpt-5.6-luna";
   if (provider === "gemini") return env.VIBBIT_GEMINI_MODEL || env.VIBBIT_MODEL || "gemini-2.5-flash";
-  if (provider === "openrouter") return env.VIBBIT_OPENROUTER_MODEL || env.VIBBIT_MODEL || "openrouter/auto";
-  return env.VIBBIT_MODEL || "gpt-4o-mini";
+  if (provider === "openrouter") return env.VIBBIT_OPENROUTER_MODEL || env.VIBBIT_MODEL || "openai/gpt-5.6-luna";
+  if (provider === "opencode") return env.VIBBIT_OPENCODE_MODEL || env.VIBBIT_MODEL || "gpt-5.6-luna";
+  return env.VIBBIT_MODEL || "gpt-5.6-luna";
 }
 
 function resolveKeyForProvider(env, provider) {
   if (provider === "openai") return env.VIBBIT_OPENAI_API_KEY || env.VIBBIT_API_KEY || "";
   if (provider === "gemini") return env.VIBBIT_GEMINI_API_KEY || env.VIBBIT_API_KEY || "";
   if (provider === "openrouter") return env.VIBBIT_OPENROUTER_API_KEY || env.VIBBIT_API_KEY || "";
+  if (provider === "opencode") return env.VIBBIT_OPENCODE_API_KEY || env.VIBBIT_API_KEY || "";
   return env.VIBBIT_API_KEY || "";
 }
 
@@ -445,6 +447,7 @@ function createRuntimeConfig(envInput = {}) {
     || env.VIBBIT_OPENAI_API_KEY
     || env.VIBBIT_GEMINI_API_KEY
     || env.VIBBIT_OPENROUTER_API_KEY
+    || env.VIBBIT_OPENCODE_API_KEY
     || ""
   );
   const legacyCodesEnabled = deployment.legacyClassroomCodesEnabled;
@@ -878,6 +881,7 @@ function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
 function providerDisplayName(provider) {
   if (provider === "openai") return "OpenAI";
   if (provider === "openrouter") return "OpenRouter";
+  if (provider === "opencode") return "OpenCode";
   if (provider === "gemini") return "Gemini";
   return provider;
 }

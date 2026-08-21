@@ -79,6 +79,8 @@ async function installFetchMock(page) {
       const nativeFetch = window.fetch.bind(window);
       window.__smokeManagedCalls = 0;
       window.__smokeByokCalls = 0;
+      window.__smokeByokBody = null;
+      window.__smokeByokUrl = "";
       window.__smokeConnectCalls = 0;
       window.__smokeSessionToken = "";
       window.fetch = (input, init) => {
@@ -116,18 +118,18 @@ async function installFetchMock(page) {
             headers: { "Content-Type": "application/json" }
           }));
         }
-        if (url.includes("api.openai.com/v1/chat/completions")) {
+        if (url.includes("api.openai.com/v1/chat/completions")
+          || url.includes("api.openai.com/v1/responses")
+          || url.includes("openrouter.ai/api/v1/chat/completions")
+          || url.includes("opencode.ai/zen/")) {
           window.__smokeByokCalls += 1;
-          return Promise.resolve(new Response(JSON.stringify({
-            choices: [{
-              message: {
-                content: [
-                  "{\"meta\":\"ignored\"}",
-                  "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}"
-                ].join("\n")
-              }
-            }]
-          }), {
+          window.__smokeByokUrl = url;
+          try { window.__smokeByokBody = JSON.parse((init && init.body) || "null"); } catch {}
+          const generated = "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
+          const responseBody = url.endsWith("/responses")
+            ? { output: [{ content: [{ type: "output_text", text: generated }] }] }
+            : { choices: [{ message: { content: generated } }] };
+          return Promise.resolve(new Response(JSON.stringify(responseBody), {
             status: 200,
             headers: { "Content-Type": "application/json" }
           }));
@@ -150,7 +152,8 @@ async function runBuildAndPackage() {
   const neutralScript = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
   const neutralHasByokPerms = (neutralManifest.host_permissions || []).includes("https://api.openai.com/*")
     && (neutralManifest.host_permissions || []).includes("https://generativelanguage.googleapis.com/*")
-    && (neutralManifest.host_permissions || []).includes("https://openrouter.ai/*");
+    && (neutralManifest.host_permissions || []).includes("https://openrouter.ai/*")
+    && (neutralManifest.host_permissions || []).includes("https://opencode.ai/*");
   pushCheck(
     "Neutral build keeps BYOK host permissions",
     neutralHasByokPerms && /const HOSTED_MANAGED = false;/.test(neutralScript),
@@ -170,6 +173,7 @@ async function runBuildAndPackage() {
     item.includes("api.openai.com")
     || item.includes("generativelanguage.googleapis.com")
     || item.includes("openrouter.ai")
+    || item.includes("opencode.ai")
   ));
   pushCheck(
     "Hosted package is code-only Managed",
@@ -324,18 +328,49 @@ async function runNeutralUiSmoke(page) {
 
   await page.evaluate(() => {
     localStorage.setItem("__vibbit_mode", "byok");
-    localStorage.setItem("__vibbit_provider", "openai");
-    localStorage.setItem("__vibbit_model", "gpt-5.2");
+    localStorage.setItem("__vibbit_provider", "opencode");
+    localStorage.setItem("__vibbit_model", "go/hy3");
     localStorage.setItem("__vibbit_key_openai", "smoke-dummy-key");
+    localStorage.setItem("__vibbit_key_opencode", "smoke-dummy-key");
   });
   await page.click("#gear");
   await page.waitForSelector("#set-mode", { timeout: 10000 });
   await page.selectOption("#set-mode", "byok");
+  await page.selectOption("#set-prov", "openai");
+  const openAiDefault = await page.locator("#set-model").inputValue();
+  await page.selectOption("#set-prov", "openrouter");
+  const openRouterModels = await page.locator("#set-model option").evaluateAll((options) => options.map((option) => option.value));
+  const openRouterDefault = await page.locator("#set-model").inputValue();
+  await page.selectOption("#set-prov", "opencode");
+  const openCodeModels = await page.locator("#set-model option").evaluateAll((options) => options.map((option) => option.value));
+  const openCodeDefault = await page.locator("#set-model").inputValue();
+  pushCheck(
+    "09 Provider model presets and defaults",
+    openAiDefault === "gpt-5.6-luna"
+      && openRouterDefault === "openai/gpt-5.6-luna"
+      && openCodeDefault === "go/responses/gpt-5.6-luna"
+      && openRouterModels.includes("qwen/qwen3.8-27b")
+      && openRouterModels.includes("tencent/hy3")
+      && openCodeModels.includes("go/hy3")
+      && openCodeModels.includes("go/responses/muse-spark-1.2-contributor"),
+    `defaults=${openAiDefault},${openRouterDefault},${openCodeDefault}; openRouter=${openRouterModels.join(",")}; openCode=${openCodeModels.join(",")}.`
+  );
+  await page.selectOption("#set-prov", "openai");
+  await page.selectOption("#set-model", "gpt-5.2");
+  const unsupportedThinkingHidden = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "none");
+  await page.selectOption("#set-model", "gpt-5.6-luna");
+  const supportedThinkingVisible = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "inline-flex");
+  pushCheck(
+    "10 Think harder follows model capability",
+    unsupportedThinkingHidden && supportedThinkingVisible,
+    `gpt52Hidden=${unsupportedThinkingHidden}, lunaVisible=${supportedThinkingVisible}.`
+  );
   await page.waitForTimeout(200);
   await page.click("#back");
   await page.waitForSelector("#go", { timeout: 10000 });
+  await page.check("#think-harder");
 
-  await page.fill("#p", "Create a tiny byok program");
+  await page.fill("#p", "Create a tiny OpenAI byok program");
   await page.click("#go");
   await page.waitForFunction(() => {
     const status = document.querySelector("#status")?.textContent?.trim() || "";
@@ -351,20 +386,69 @@ async function runNeutralUiSmoke(page) {
       pastedCode,
       logText,
       byokCalls: Number(window.__smokeByokCalls || 0),
-      managedCalls: Number(window.__smokeManagedCalls || 0)
+      managedCalls: Number(window.__smokeManagedCalls || 0),
+      byokUrl: window.__smokeByokUrl,
+      byokBody: window.__smokeByokBody
     };
   });
   await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
   pushCheck(
-    "09 BYOK mocked generation",
+    "11 OpenAI Responses generation",
     byokGenerationState.status === "Done"
       && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
-      && byokGenerationState.byokCalls >= 1,
-    `status='${byokGenerationState.status}', byokCalls=${byokGenerationState.byokCalls}, managedCalls=${byokGenerationState.managedCalls}.`
+      && byokGenerationState.byokCalls >= 1
+      && byokGenerationState.byokUrl === "https://api.openai.com/v1/responses"
+      && byokGenerationState.byokBody?.model === "gpt-5.6-luna"
+      && byokGenerationState.byokBody?.max_output_tokens === 16384
+      && byokGenerationState.byokBody?.reasoning?.effort === "max",
+    `status='${byokGenerationState.status}', byokCalls=${byokGenerationState.byokCalls}, url='${byokGenerationState.byokUrl}', model='${byokGenerationState.byokBody?.model || ""}', reasoning='${byokGenerationState.byokBody?.reasoning?.effort || ""}'.`
   );
 
   const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(byokGenerationState.logText);
-  pushCheck("10 Decompile probe log", hasProbeLog, `logHasProbeMessage=${hasProbeLog}.`);
+  pushCheck("12 Decompile probe log", hasProbeLog, `logHasProbeMessage=${hasProbeLog}.`);
+
+  await page.click("#gear");
+  await page.selectOption("#set-prov", "opencode");
+  await page.selectOption("#set-model", "go/hy3");
+  await page.click("#back");
+  await page.fill("#p", "Create a tiny OpenCode byok program");
+  await page.click("#go");
+  await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 2, { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  const openCodeChatState = await page.evaluate(() => ({
+    url: window.__smokeByokUrl,
+    body: window.__smokeByokBody
+  }));
+  pushCheck(
+    "13 OpenCode Chat Completions generation",
+    openCodeChatState.url === "https://opencode.ai/zen/go/v1/chat/completions"
+      && openCodeChatState.body?.model === "hy3"
+      && openCodeChatState.body?.max_tokens === 16384
+      && openCodeChatState.body?.reasoning?.effort === "xhigh",
+    `url='${openCodeChatState.url}', model='${openCodeChatState.body?.model || ""}', reasoning='${openCodeChatState.body?.reasoning?.effort || ""}'.`
+  );
+
+  await page.click("#gear");
+  await page.selectOption("#set-model", "go/responses/muse-spark-1.2-contributor");
+  await page.click("#back");
+  await page.fill("#p", "Create another tiny byok program");
+  await page.click("#go");
+  await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 3, { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  const responsesState = await page.evaluate(() => ({
+    url: window.__smokeByokUrl,
+    body: window.__smokeByokBody,
+    code: window.__smokeMonacoValue || ""
+  }));
+  pushCheck(
+    "14 OpenCode Responses generation",
+    responsesState.url === "https://opencode.ai/zen/go/v1/responses"
+      && responsesState.body?.model === "muse-spark-1.2-contributor"
+      && responsesState.body?.max_output_tokens === 16384
+      && responsesState.body?.reasoning?.effort === "xhigh"
+      && responsesState.code.includes("basic.showString(\"BYOK\")"),
+    `url='${responsesState.url}', model='${responsesState.body?.model || ""}', maxOutputTokens=${responsesState.body?.max_output_tokens || 0}.`
+  );
 }
 
 async function runHostedUiSmoke(browser) {
@@ -403,7 +487,7 @@ async function runHostedUiSmoke(browser) {
       };
     });
     pushCheck(
-      "11 Hosted-managed UI is code-only",
+      "15 Hosted-managed UI is code-only",
       hostedSetup.modeValue === "managed"
         && hostedSetup.modeRowHidden
         && hostedSetup.byokHidden
@@ -421,7 +505,7 @@ async function runHostedUiSmoke(browser) {
       badge: document.querySelector("#classroom-badge")?.textContent || ""
     }));
     pushCheck(
-      "12 Hosted join verifies classroom code",
+      "16 Hosted join verifies classroom code",
       hostedJoin.connectCalls === 1 && hostedJoin.badge.includes("Smoke Classroom"),
       `connectCalls=${hostedJoin.connectCalls}, badge='${hostedJoin.badge}'.`
     );

@@ -2,6 +2,7 @@ dist/
 artifacts/
 node_modules/
 output/playwright/
+output/model-evals/
 .DS_Store
 .env.audit
 .env.audit.local

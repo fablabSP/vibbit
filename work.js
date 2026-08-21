@@ -39,6 +39,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_KEY_PREFIX = "__vibbit_key_";
   const STORAGE_PROVIDER = "__vibbit_provider";
   const STORAGE_MODEL = "__vibbit_model";
+  const STORAGE_THINK_HARDER = "__vibbit_think_harder";
   const STORAGE_SETUP_DONE = "__vibbit_setup_done";
   const STORAGE_SERVER = "__vibbit_server";
   const STORAGE_TARGET = "__vibbit_target";
@@ -52,7 +53,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const MODEL_PRESETS = {
     openai: [
       { id: "gpt-5-mini", label: "GPT-5 Mini" },
-      { id: "gpt-5.2", label: "GPT-5.2", default: true }
+      { id: "gpt-5.2", label: "GPT-5.2" },
+      { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", default: true }
     ],
     gemini: [
       { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", default: true },
@@ -60,12 +62,40 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" }
     ],
     openrouter: [
-      { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2", default: true },
-      { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-      { id: "google/gemini-2.5-flash-lite-preview-09-2025", label: "Gemini 2.5 Flash Lite (Preview)" },
-      { id: "openai/gpt-5.2", label: "GPT-5.2" },
-      { id: "minimax/minimax-m2.5", label: "MiniMax M2.5" }
+      { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", default: true },
+      { id: "deepseek/deepseek-v4-flash-0731", label: "DeepSeek V4 Flash 0731" },
+      { id: "xiaomi/mimo-v2.5", label: "MiMo-V2.5" },
+      { id: "qwen/qwen3.8-27b", label: "Qwen3.8 27B" },
+      { id: "tencent/hy3", label: "Hy3" }
+    ],
+    opencode: [
+      { id: "go/responses/gpt-5.6-luna", label: "Go · GPT-5.6 Luna", default: true },
+      { id: "go/deepseek-v4-flash", label: "Go · DeepSeek V4 Flash" },
+      { id: "go/mimo-v2.5", label: "Go · MiMo-V2.5" },
+      { id: "go/kimi-k3", label: "Go · Kimi K3" },
+      { id: "go/glm-5.3", label: "Go · GLM-5.3" },
+      { id: "go/hy3", label: "Go · Hy3" },
+      { id: "go/responses/muse-spark-1.2-contributor", label: "Go · Muse Spark 1.2 Contributor (trains on data)" },
+      { id: "zen/hy3-free", label: "Zen · Hy3 Free" },
+      { id: "zen/big-pickle", label: "Zen · Big Pickle" },
+      { id: "zen/nemotron-3-ultra-free", label: "Zen · Nemotron 3 Ultra Free" },
+      { id: "zen/nemotron-3.5-lightning-free", label: "Zen · Nemotron 3.5 Lightning Free" }
     ]
+  };
+
+  const OPENROUTER_THINK_MODELS = new Set([
+    "openai/gpt-5.6-luna",
+    "deepseek/deepseek-v4-flash-0731",
+    "qwen/qwen3.8-27b",
+    "tencent/hy3"
+  ]);
+  const OPENCODE_THINK_MODELS = new Set(MODEL_PRESETS.opencode.map((preset) => preset.id));
+
+  const supportsThinkHarder = (provider, model) => {
+    if (provider === "openai") return model === "gpt-5.6-luna";
+    if (provider === "openrouter") return OPENROUTER_THINK_MODELS.has(model);
+    if (provider === "opencode") return OPENCODE_THINK_MODELS.has(model);
+    return false;
   };
 
   const storageGet = (key) => {
@@ -197,6 +227,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
     + '      <option value="openrouter">OpenRouter</option>'
+    + '      <option value="opencode">OpenCode</option>'
     + '    </select>'
     + '  </div>'
 
@@ -256,7 +287,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     /* input area */
     + '<div style="flex-shrink:0;border-top:1px solid #1f2b47;padding:12px 16px;background:#0d1528">'
     + '  <textarea id="p" rows="2" aria-label="Describe what you want the block code to do" placeholder="Describe what you want the block code to do\u2026" style="width:100%;resize:none;min-height:44px;max-height:120px;padding:10px 12px;border-radius:10px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;font-size:13px;line-height:1.4;box-sizing:border-box;font-family:inherit"></textarea>'
-    + '  <div style="display:flex;align-items:center;justify-content:flex-end;margin-top:8px">'
+    + '  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px">'
+    + '    <label id="think-harder-wrap" title="Use the provider\'s maximum reasoning mode. This can take longer and use more tokens." style="display:none;align-items:center;gap:6px;color:#9bb1dd;font-size:12px;cursor:pointer;user-select:none">'
+    + '      <input id="think-harder" type="checkbox" style="margin:0;accent-color:#3454D1"> Think harder'
+    + '    </label>'
     + '    <div style="display:flex;gap:8px;align-items:center">'
     + '      <button id="new-chat-btn" aria-label="Start a new chat" style="display:none;padding:6px 14px;border:1px solid #29324e;border-radius:8px;background:transparent;color:#8899bb;font-size:12px;font-weight:500;cursor:pointer">New</button>'
     + '      <button id="go" aria-label="Send message" style="padding:8px 20px;border:none;border-radius:8px;background:#3454D1;color:#fff;font-weight:600;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px">Send <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>'
@@ -300,6 +334,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
     + '      <option value="openrouter">OpenRouter</option>'
+    + '      <option value="opencode">OpenCode</option>'
     + '    </select>'
     + '  </div>'
 
@@ -486,6 +521,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const gearBtn = $("#gear");
   const promptEl = $("#p");
   const go = $("#go");
+  const thinkHarderWrap = $("#think-harder-wrap");
+  const thinkHarder = $("#think-harder");
   const chatMessagesEl = $("#chat-messages");
   const newChatBtn = $("#new-chat-btn");
   const logToggle = $("#logToggle");
@@ -539,7 +576,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       selectEl.appendChild(opt);
       if (preset.default) defaultId = preset.id;
     });
-    if (savedModel && presets.some((p) => p.id === savedModel)) {
+    if (savedModel && !presets.some((preset) => preset.id === savedModel)) {
+      const savedOption = document.createElement("option");
+      savedOption.value = savedModel;
+      savedOption.textContent = "Saved · " + savedModel;
+      selectEl.appendChild(savedOption);
+    }
+    if (savedModel) {
       selectEl.value = savedModel;
     } else if (defaultId) {
       selectEl.value = defaultId;
@@ -607,6 +650,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (setMode.value !== mode) setMode.value = mode;
     setModeVisibility(mode, settingsModeRefs);
     storageSet(STORAGE_MODE, mode);
+  };
+
+  const refreshThinkHarderVisibility = () => {
+    const mode = coerceMode(storageGet(STORAGE_MODE) || "byok");
+    const provider = storageGet(STORAGE_PROVIDER) || "openai";
+    const model = storageGet(STORAGE_MODEL) || "";
+    const supportsThinking = supportsThinkHarder(provider, model);
+    thinkHarderWrap.style.display = mode === "byok" && supportsThinking ? "inline-flex" : "none";
   };
 
   /* ── state ───────────────────────────────────────────────── */
@@ -1308,6 +1359,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const savedClassCode = getStoredClassCode();
   const savedTarget = storageGet(STORAGE_TARGET) || "microbit";
   const setupDone = storageGet(STORAGE_SETUP_DONE) === "1";
+  thinkHarder.checked = storageGet(STORAGE_THINK_HARDER) === "1";
 
   /* hydrate setup view */
   setupMode.value = coerceMode(savedMode);
@@ -1327,6 +1379,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   setClassCode.value = formatClassCodeInput(savedClassCode);
   setTarget.value = savedTarget;
   applySettingsMode();
+  refreshThinkHarderVisibility();
   setClassroomName(storageGet(STORAGE_CLASSROOM_NAME) || "");
 
   /* show correct initial view */
@@ -1417,6 +1470,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setServer.value = setupServer.value;
     setClassCode.value = setupClassCode.value;
     applySettingsMode();
+    refreshThinkHarderVisibility();
 
     showView("main");
   };
@@ -1424,6 +1478,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── settings view events ────────────────────────────────── */
   setMode.onchange = () => {
     applySettingsMode();
+    refreshThinkHarderVisibility();
     setupMode.value = setMode.value;
     applySetupMode();
   };
@@ -1434,10 +1489,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     /* select the default and persist */
     storageSet(STORAGE_MODEL, setModel.value);
     setKey.value = getStoredProviderKey(setProv.value);
+    refreshThinkHarderVisibility();
   };
 
   setModel.onchange = () => {
     storageSet(STORAGE_MODEL, setModel.value);
+    refreshThinkHarderVisibility();
+  };
+
+  thinkHarder.onchange = () => {
+    storageSet(STORAGE_THINK_HARDER, thinkHarder.checked ? "1" : "0");
   };
 
   saveBtn.onclick = () => {
@@ -3221,8 +3282,42 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return model.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
   };
 
+  const extractResponsesText = (data) => {
+    if (typeof data.output_text === "string") return data.output_text.trim();
+    const output = Array.isArray(data.output) ? data.output : [];
+    return output.flatMap((item) => Array.isArray(item && item.content) ? item.content : [])
+      .map((item) => item && typeof item.text === "string" ? item.text : "")
+      .join("")
+      .trim();
+  };
+
   const callOpenAI = (key, model, system, user, signal) => {
-    const resolvedModel = model || "gpt-5.2";
+    const resolvedModel = model || "gpt-5.6-luna";
+    const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
+      && supportsThinkHarder("openai", resolvedModel);
+    if (resolvedModel === "gpt-5.6-luna") {
+      const body = {
+        model: resolvedModel,
+        max_output_tokens: thinkHarderEnabled ? 16384 : MAXTOK,
+        input: [{ role: "system", content: system }, { role: "user", content: user }]
+      };
+      if (thinkHarderEnabled) body.reasoning = { effort: "max" };
+      return withTimeout(
+        fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
+          body: JSON.stringify(body),
+          signal
+        })
+          .then((response) => {
+            if (!response.ok) return response.text().then((text) => { throw new Error(text); });
+            return response.json();
+          })
+          .then(extractResponsesText),
+        thinkHarderEnabled ? 120000 : REQ_TIMEOUT_MS,
+        "OpenAI"
+      );
+    }
     const body = {
       model: resolvedModel,
       messages: [{ role: "system", content: system }, { role: "user", content: user }]
@@ -3276,7 +3371,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const callOpenRouter = (key, model, system, user, signal) => {
     const models = parseModelList(model);
-    const queue = models.length ? models : ["openrouter/auto"];
+    const queue = models.length ? models : ["openai/gpt-5.6-luna"];
     const headers = {
       "Content-Type": "application/json",
       Authorization: "Bearer " + key
@@ -3285,12 +3380,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     try { if (document && document.title) headers["X-Title"] = document.title; } catch (error) {}
 
     const sendForModel = (modelId) => {
+      const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
+        && supportsThinkHarder("openrouter", modelId);
       const body = {
         model: modelId,
-        temperature: BASE_TEMP,
-        max_tokens: MAXTOK,
+        max_tokens: thinkHarderEnabled ? 16384 : MAXTOK,
         messages: [{ role: "system", content: system }, { role: "user", content: user }]
       };
+      if (modelId !== "openai/gpt-5.6-luna") body.temperature = BASE_TEMP;
+      if (thinkHarderEnabled) {
+        body.reasoning = { effort: "max" };
+      }
       return withTimeout(
         fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
@@ -3303,7 +3403,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             return response.json();
           })
           .then((data) => ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim()),
-        REQ_TIMEOUT_MS,
+        thinkHarderEnabled ? 120000 : REQ_TIMEOUT_MS,
         "OpenRouter " + modelId
       );
     };
@@ -3334,9 +3434,65 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return attempt(0);
   };
 
+  const callOpenCode = (key, model, system, user, signal) => {
+    const selected = String(model || "go/responses/gpt-5.6-luna").trim();
+    const parts = selected.split("/").filter(Boolean);
+    const access = parts[0] === "go" || parts[0] === "zen" ? parts.shift() : "go";
+    const protocol = parts[0] === "responses" ? parts.shift() : "chat";
+    const modelId = parts.join("/") || selected;
+    const baseUrl = access === "zen"
+      ? "https://opencode.ai/zen/v1"
+      : "https://opencode.ai/zen/go/v1";
+    const temperature = /^kimi-/i.test(modelId) ? 1 : BASE_TEMP;
+    const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
+      && supportsThinkHarder("opencode", selected);
+    const maxTokens = thinkHarderEnabled ? 16384 : MAXTOK;
+    const body = protocol === "responses"
+      ? {
+          model: modelId || "deepseek-v4-flash",
+          max_output_tokens: maxTokens,
+          input: [{ role: "system", content: system }, { role: "user", content: user }]
+        }
+      : {
+          model: modelId || "deepseek-v4-flash",
+          temperature,
+          max_tokens: maxTokens,
+          messages: [{ role: "system", content: system }, { role: "user", content: user }]
+        };
+    if (protocol === "responses" && !/^gpt-/i.test(modelId)) body.temperature = temperature;
+    if (thinkHarderEnabled) {
+      body.reasoning = { effort: "xhigh" };
+    } else if (/^hy3(?:-|$)/i.test(modelId)) {
+      body.reasoning = { effort: "none" };
+    }
+    return withTimeout(
+      fetch(baseUrl + (protocol === "responses" ? "/responses" : "/chat/completions"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + key
+        },
+        body: JSON.stringify(body),
+        signal
+      })
+        .then((response) => {
+          if (!response.ok) return response.text().then((text) => { throw new Error(text || ("HTTP " + response.status)); });
+          return response.json();
+        })
+        .then((data) => {
+          if (protocol !== "responses") {
+            return ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim();
+          }
+          return extractResponsesText(data);
+        }),
+      thinkHarderEnabled ? 120000 : REQ_TIMEOUT_MS,
+      "OpenCode " + access + " " + modelId
+    );
+  };
+
   const askValidated = (provider, apiKey, model, system, user, target, signal) => {
-    const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter };
-    const names = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter" };
+    const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
+    const names = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
     const callProvider = providers[provider] || providers.openai;
 
     const oneAttempt = (extraSystem, insistOnlyCode) => {

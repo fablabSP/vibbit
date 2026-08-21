@@ -10,7 +10,7 @@ Teachers:
 
 Students enter the classroom code (hosted package is code-only). Prefer the bookmarklet join flow unless school IT manages Chrome ZIP installs.
 
-The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured provider (OpenAI, OpenRouter, Gemini, or an allow-listed custom OpenAI-compatible gateway).
+The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured provider (OpenAI, OpenRouter, OpenCode, Gemini, or an allow-listed custom OpenAI-compatible gateway).
 
 ## Endpoints
 
@@ -154,16 +154,17 @@ Open `/teacher`, sign in with local/dev login, paste an OpenAI-compatible key + 
 
 ## LiteLLM and Claude-compatible endpoints
 
-Teachers can point a custom AI account at an OpenAI-compatible gateway. Built-in providers (OpenAI, OpenRouter, Gemini) need no allow-list. Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`. Localhost or private HTTP gateways require self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`.
+Teachers can point a custom AI account at an OpenAI-compatible gateway. Built-in providers (OpenAI, OpenRouter, OpenCode, Gemini) need no allow-list. Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`. Localhost or private HTTP gateways require self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`.
 
 | Provider / gateway | Example base URL |
 | --- | --- |
 | OpenAI | `https://api.openai.com/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
+| OpenCode Go | `https://opencode.ai/zen/go/v1` |
 | LiteLLM proxy | `http://localhost:4000/v1` (self-hosted + private endpoints) |
 | Claude via OpenAI-compatible proxy | your proxy’s `/v1` URL (allow-listed if public) |
 
-Vibbit calls `{baseUrl}/chat/completions` with the teacher’s API key. You do not need to run LiteLLM inside this repo — point the classroom at an existing LiteLLM (or similar) deployment if you want multi-provider routing.
+Vibbit normally calls `{baseUrl}/chat/completions` with the teacher’s API key. GPT-5.6 Luna on OpenAI and OpenCode models documented for the Responses API are routed to `/responses`. OpenCode model names may use `go/` or `zen/` prefixes (for example, `go/gpt-5.6-luna` or `zen/hy3-free`); an omitted prefix defaults to Go. You do not need to run LiteLLM inside this repo — point the classroom at an existing LiteLLM (or similar) deployment if you want multi-provider routing.
 
 ## Environment variables
 
@@ -216,10 +217,10 @@ Legacy app-token auth:
 
 Provider routing (legacy shared fallback /admin):
 
-- `VIBBIT_ENABLED_PROVIDERS` (comma list; default `openai,gemini,openrouter`)
+- `VIBBIT_ENABLED_PROVIDERS` (comma list; default `openai,gemini,openrouter,opencode`)
 - `VIBBIT_PROVIDER` default provider
 - `VIBBIT_MODEL` default fallback model
-- `VIBBIT_OPENAI_ALLOWED_MODELS`, `VIBBIT_GEMINI_ALLOWED_MODELS`, `VIBBIT_OPENROUTER_ALLOWED_MODELS` (optional comma allow-lists)
+- `VIBBIT_OPENAI_ALLOWED_MODELS`, `VIBBIT_GEMINI_ALLOWED_MODELS`, `VIBBIT_OPENROUTER_ALLOWED_MODELS`, `VIBBIT_OPENCODE_ALLOWED_MODELS` (optional comma allow-lists)
 
 Provider keys/models (legacy shared fallback):
 
@@ -227,6 +228,7 @@ Provider keys/models (legacy shared fallback):
 - `VIBBIT_OPENAI_API_KEY`, `VIBBIT_OPENAI_MODEL` (optional)
 - `VIBBIT_GEMINI_API_KEY`, `VIBBIT_GEMINI_MODEL` (optional)
 - `VIBBIT_OPENROUTER_API_KEY`, `VIBBIT_OPENROUTER_MODEL` (optional)
+- `VIBBIT_OPENCODE_API_KEY`, `VIBBIT_OPENCODE_MODEL` (optional; OpenCode Go/Zen, selected with a `go/` or `zen/` model prefix)
 
 If these are omitted, set provider keys/models via `/admin` (legacy) or per-classroom in `/teacher`.
 
