@@ -29,6 +29,7 @@ import {
 } from "./provider-registry.mjs";
 import { createRateLimitController } from "./rate-limit.mjs";
 import { createUsageStore } from "./usage-store.mjs";
+import { compileAndDecompile } from "../../../shared/makecode-decompile.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter", "opencode"];
@@ -689,6 +690,7 @@ async function generateManaged(
     emptyRetries: runtimeConfig.emptyRetries || 0,
     validationRetries: runtimeConfig.validationRetries || 0,
     maxAttempts,
+    runDecompile: (code, loopTarget) => compileAndDecompile({ code, target: loopTarget }),
     callModel: async (messages) => {
       if (providerCalls >= maxAttempts) {
         throw new Error("Upstream attempt limit reached");

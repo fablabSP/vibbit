@@ -1252,7 +1252,8 @@ export function buildFailedAttemptUserTurn({
   validation,
   target,
   kind,
-  strict = false
+  strict = false,
+  decompile = null
 } = {}) {
   const failedProgramme = code == null ? "" : String(code);
   const lines = [
@@ -1262,6 +1263,12 @@ export function buildFailedAttemptUserTurn({
   ];
   if (kind === "empty") {
     lines.push("Your previous reply had empty code. Return a complete MakeCode programme as JSON only.");
+  } else if (kind === "decompile") {
+    lines.push(buildDecompileFixRequest({
+      greyBlocks: decompile && decompile.greyBlocks,
+      snippets: decompile && decompile.snippets,
+      reason: (decompile && decompile.reason) || "MakeCode decompile produced grey blocks."
+    }));
   } else {
     const violations = validation && Array.isArray(validation.violations) ? validation.violations : [];
     lines.push(buildCorrectionInstruction(violations, target, { strict: Boolean(strict) }));
@@ -1322,7 +1329,8 @@ export async function runGenerationLoop({
   emptyRetries = 0,
   validationRetries = 0,
   maxAttempts = 1,
-  callModel
+  callModel,
+  runDecompile
 } = {}) {
   const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
   let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
@@ -1342,15 +1350,26 @@ export async function runGenerationLoop({
     const code = sanitizeMakeCode(parsed.code);
     const validation = runValidateBlocks(code, target);
     // Empty source can pass the static validator; treat it as empty, not ok.
-    const reason = !String(code || "").trim()
+    let reason = !String(code || "").trim()
       ? "empty"
       : (validation.ok ? "ok" : "invalid");
+    let decompile = null;
+    if (reason === "ok" && typeof runDecompile === "function") {
+      try {
+        decompile = await runDecompile(code, target);
+        if (decompile && decompile.ok === false) reason = "decompile";
+      } catch {
+        // Worker outage must not stub every Managed generate.
+        decompile = { skipped: true };
+      }
+    }
     last = {
       raw: raw == null ? "" : String(raw),
       code,
       feedback: parsed.feedback,
       validation,
-      reason
+      reason,
+      decompile
     };
     attempts.push(last);
 
@@ -1384,6 +1403,19 @@ export async function runGenerationLoop({
       continue;
     }
 
+    if (reason === "decompile" && validationLeft > 0) {
+      validationLeft -= 1;
+      messages.push(transcriptTurn("assistant", code));
+      messages.push(transcriptTurn("user", buildFailedAttemptUserTurn({
+        code,
+        validation,
+        target,
+        kind: "decompile",
+        decompile
+      })));
+      continue;
+    }
+
     break;
   }
 
@@ -1413,6 +1445,20 @@ export async function runGenerationLoop({
       validation: lastValidation,
       upstreamAttempts,
       outcome: "stub-empty",
+      attempts
+    };
+  }
+
+  if (last && last.reason === "decompile") {
+    const why = last.decompile && last.decompile.reason
+      ? last.decompile.reason
+      : "grey blocks after decompile";
+    return {
+      code: stubForTarget(target),
+      feedback: normaliseFeedback([...lastFeedback, "Validation fallback: " + why]),
+      validation: lastValidation,
+      upstreamAttempts,
+      outcome: "stub-invalid",
       attempts
     };
   }

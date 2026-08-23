@@ -11,6 +11,10 @@ import {
   parseModelOutput,
   validateBlocksCompatibility
 } from "../../shared/makecode-compat-core.mjs";
+import {
+  compileAndDecompile,
+  scoreMakeCodeValidation
+} from "../../shared/makecode-decompile.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -152,9 +156,38 @@ function provisionalScore(contract, compatibility, criteria) {
   const criteriaPoints = criteria.total ? 20 * criteria.passed / criteria.total : 20;
   return {
     score: Number((contractPoints + compatibilityPoints + criteriaPoints).toFixed(2)),
-    max: 40,
-    pendingMakeCodePoints: 60
+    max: 40
   };
+}
+
+function emptyMakeCodeValidation(message) {
+  return {
+    ok: false,
+    compileOk: false,
+    decompileOk: false,
+    nativeBlocks: false,
+    greyBlocks: 0,
+    snippets: [],
+    diagnostics: [{ messageText: message }],
+    targetRelease: null,
+    hashes: {},
+    roundTripOk: null,
+    reason: message
+  };
+}
+
+async function runPinnedMakeCodeValidation(code, target) {
+  if (!String(code || "").trim()) {
+    const report = emptyMakeCodeValidation("empty output");
+    return { report, score: scoreMakeCodeValidation(report), error: null };
+  }
+  try {
+    const report = await compileAndDecompile({ code, target });
+    return { report, score: scoreMakeCodeValidation(report), error: null };
+  } catch (error) {
+    const report = emptyMakeCodeValidation(error.message);
+    return { report, score: scoreMakeCodeValidation(report), error: error.message };
+  }
 }
 
 function buildPrompt(testCase, promptMode) {
@@ -293,6 +326,7 @@ async function main() {
   await writeFile(path.join(runDir, "models-snapshot.json"), JSON.stringify(modelSnapshot, null, 2) + "\n");
 
   const records = [];
+  const validationRecords = [];
   for (let index = 0; index < matrix.length; index += 1) {
     const { model, testCase, repetition } = matrix[index];
     const { system, user } = buildPrompt(testCase, options.promptMode);
@@ -370,15 +404,45 @@ async function main() {
         makeCodeValidation: null
       };
       records.push(record);
-      console.log(`${provisional.score}/${provisional.max}, ${latencyMs}ms`);
+      const pinned = await runPinnedMakeCodeValidation(parsed.code, testCase.target);
+      validationRecords.push({
+        requestedModel: model,
+        caseId: testCase.id,
+        repetition,
+        target: testCase.target,
+        targetBoard: testCase.targetBoard || null,
+        makeCodeValidation: pinned.report,
+        makeCodeScore: pinned.score,
+        totalScore: Number((provisional.score + pinned.score.score).toFixed(2)),
+        totalMax: 100,
+        error: pinned.error
+      });
+      console.log(`${provisional.score}/${provisional.max} + ${pinned.score.score}/${pinned.score.max}, ${latencyMs}ms`);
     } catch (error) {
       records.push({ ...base, status: "error", error: error.message, makeCodeValidation: null });
+      validationRecords.push({
+        requestedModel: model,
+        caseId: testCase.id,
+        repetition,
+        target: testCase.target,
+        makeCodeValidation: null,
+        makeCodeScore: { score: 0, max: 60 },
+        totalScore: 0,
+        totalMax: 100,
+        error: error.message
+      });
       console.log(`ERROR ${error.message}`);
     }
   }
 
   const resultsPath = path.join(runDir, "results.jsonl");
   await writeFile(resultsPath, records.map((item) => JSON.stringify(item)).join("\n") + "\n");
+  const validationPath = path.join(runDir, "makecode-validation.jsonl");
+  await writeFile(validationPath, validationRecords.map((item) => JSON.stringify(item)).join("\n") + "\n");
+  const scored = validationRecords.filter((item) => item.makeCodeValidation);
+  const meanTotal = scored.length
+    ? Number((scored.reduce((sum, item) => sum + item.totalScore, 0) / scored.length).toFixed(2))
+    : null;
   const summary = {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
@@ -395,8 +459,10 @@ async function main() {
     requests: records.length,
     successfulRequests: records.filter((item) => item.status === "ok").length,
     errors: records.filter((item) => item.status === "error").length,
-    note: "Scores are provisional (40 points maximum) until pinned MakeCode compile/decompile validation fills makeCodeValidation.",
+    meanTotalScore: meanTotal,
+    note: "results.jsonl is the immutable provider capture. Pinned compile and decompile scores live in makecode-validation.jsonl.",
     results: "results.jsonl",
+    makeCodeValidation: "makecode-validation.jsonl",
     modelSnapshot: "models-snapshot.json"
   };
   await writeFile(path.join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n");

@@ -3,6 +3,7 @@ artifacts/
 node_modules/
 output/playwright/
 output/model-evals/
+output/makecode-cache/
 .DS_Store
 .env.audit
 .env.audit.local

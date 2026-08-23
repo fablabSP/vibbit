@@ -1,0 +1,34 @@
+{
+  "microbit": {
+    "website": "https://makecode.microbit.org/",
+    "commit": "a2de741814d32e5156dd57569b9229adbfdb07d6",
+    "targetVersion": "9.0.12",
+    "pxtVersion": "13.0.9",
+    "dependencies": {
+      "core": "*",
+      "radio": "*",
+      "microphone": "*"
+    },
+    "hwVariant": null
+  },
+  "arcade": {
+    "website": "https://arcade.makecode.com/",
+    "commit": "bff6e9502e84eb1df55cd6f695b214eefabc20e7",
+    "targetVersion": "4.0.14",
+    "pxtVersion": "12.2.34",
+    "dependencies": {
+      "device": "*"
+    },
+    "hwVariant": null
+  },
+  "maker": {
+    "website": "https://maker.makecode.com/",
+    "commit": "4301981bb21b375f5c827867187dc806b9eb67ec",
+    "targetVersion": "0.15.77",
+    "pxtVersion": "13.1.5",
+    "dependencies": {
+      "adafruit-circuit-playground-express": "*"
+    },
+    "hwVariant": "adafruit-circuit-playground-express"
+  }
+}

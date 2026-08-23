@@ -455,3 +455,80 @@ test("decompile fix request uses British spelling and names grey blocks", () => 
   assert.ok(text.includes("baz()"));
   assert.ok(!text.includes("dropped"));
 });
+
+test("generation loop retries a headless decompile miss using the same retry budget", async () => {
+  const calls = [];
+  let decompileCalls = 0;
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    runDecompile: async () => {
+      decompileCalls += 1;
+      if (decompileCalls === 1) {
+        return {
+          ok: false,
+          greyBlocks: 1,
+          snippets: ["grey()"],
+          reason: "Detected 1 grey JavaScript block(s)"
+        };
+      }
+      return { ok: true, greyBlocks: 0, snippets: [] };
+    },
+    callModel: async (messages) => {
+      calls.push(messages.slice());
+      return jsonOutput(VALID_HEART, ["heart"]);
+    }
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 2);
+  assert.equal(decompileCalls, 2);
+  assert.equal(result.code, VALID_HEART);
+  assert.ok(calls[1][3].content.includes("<<<FAILED_ATTEMPT>>>"));
+  assert.ok(calls[1][3].content.includes(VALID_HEART));
+  assert.ok(calls[1][3].content.includes("Grey block count: 1."));
+});
+
+test("generation loop fails open when the decompiler throws", async () => {
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    runDecompile: async () => {
+      throw new Error("cdn down");
+    },
+    callModel: async () => jsonOutput(VALID_HEART, ["ok"])
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 1);
+  assert.equal(result.code, VALID_HEART);
+  assert.equal(result.attempts[0].decompile.skipped, true);
+});
+
+test("generation loop stubs after decompile retries are exhausted", async () => {
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 0,
+    validationRetries: 1,
+    maxAttempts: 2,
+    runDecompile: async () => ({
+      ok: false,
+      greyBlocks: 2,
+      snippets: ["oops()"],
+      reason: "Detected 2 grey JavaScript block(s)"
+    }),
+    callModel: async () => jsonOutput('basic.showIcon(IconNames.Heart)', ["ok"])
+  });
+  assert.equal(result.outcome, "stub-invalid");
+  assert.equal(result.upstreamAttempts, 2);
+  assert.equal(result.code, stubForTarget("microbit"));
+  assert.ok(result.feedback.some((line) => /grey/i.test(line)));
+});

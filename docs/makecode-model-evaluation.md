@@ -7,7 +7,7 @@ The model sampler and corpus are available now:
 - `evals/makecode-models/corpus.json`: 24 cases across micro:bit, Arcade, and Maker and across eight task categories. Micro:bit is the primary screening target; Arcade and Maker remain cross-target regression checks.
 - `evals/makecode-models/run.mjs`: exact Vibbit prompt construction, OpenAI-compatible sampling, strict contract checks, compatibility prechecks, prompt criteria, latency, token usage, and cost capture.
 
-The sampler deliberately awards only 40 provisional points. A regex cannot establish whether an API exists or code decompiles. The remaining 60 points require a pinned MakeCode compiler/decompiler runner described below.
+The sampler awards 40 contract and prefilter points in `results.jsonl`. A regex cannot establish whether an API exists or code decompiles. The remaining 60 points come from the pinned MakeCode compiler and decompiler in `shared/makecode-decompile.mjs`. Those scores are written to `makecode-validation.jsonl` beside the raw JSONL. The raw file stays immutable.
 
 ## What is being compared
 
@@ -39,7 +39,7 @@ There is one case per category per target:
 7. unsupported or invented APIs;
 8. valid-looking TypeScript constructs that compile in ordinary TypeScript but do not become native Blocks.
 
-Each case has conservative required and forbidden patterns. They test explicit semantics such as exact pins, timing, event kinds, and prohibited behavior. They are not an oracle: equivalent code can miss a textual pattern, and matching every pattern does not prove correctness. Any pattern change is a corpus-version change and should be reviewed against known-good target output.
+Each case has conservative required and forbidden patterns. They test explicit semantics such as exact pins, timing, event kinds, and prohibited behaviour. They are not an oracle: equivalent code can miss a textual pattern, and matching every pattern does not prove correctness. Any pattern change is a corpus-version change and should be reviewed against known-good target output.
 
 ### Target constraints
 
@@ -73,7 +73,7 @@ A **hard pass** requires all of the following, regardless of weighted score:
 - successful decompilation;
 - zero grey/TypeScript-statement blocks;
 - all required and forbidden case criteria;
-- for repair cases, the reported bad construct is absent and intended behavior remains.
+- for repair cases, the reported bad construct is absent and intended behaviour remains.
 
 Report:
 
@@ -161,28 +161,31 @@ node evals/makecode-models/run.mjs \
 
 Results go to ignored `output/model-evals/<provider>-<timestamp>/`:
 
-- `results.jsonl`: raw output, parsed output, provisional checks, usage/cost, and a null `makeCodeValidation` slot;
+- `results.jsonl`: raw output, parsed output, provisional checks, usage/cost, and a null `makeCodeValidation` slot that stays null;
+- `makecode-validation.jsonl`: pinned compile, decompile, grey-block, hash, and 60-point score records derived from that run;
 - `models-snapshot.json`: provider model metadata at run time;
 - `summary.json`: run configuration and counts.
+
+`--dry-run` still validates the matrix without API calls and without loading a compiler worker.
 
 Secrets are read only from the named environment variable and are never written. OpenRouter currently returns native token accounting and cost in `usage`; for endpoints that omit billed cost, retain token counts and apply a frozen price snapshot during analysis rather than silently using today's price later.
 
 ## True MakeCode validation
 
-### Preferred repeatable infrastructure
+The eval runner now calls `compileAndDecompile` from `shared/makecode-decompile.mjs` after each successful sample. That module loads a pinned `pxtworker.js` and `target.json` from `https://cdn.makecode.com/commit/<sha>/` for micro:bit, Arcade, and Maker. Pins live in `shared/makecode-pins.json`.
 
-Build a separate validator image or CI job with immutable editor/target versions. For each JSONL response:
+For each JSONL response with code:
 
-1. Create an isolated target project with `main.ts`, `main.blocks`, target-specific `pxt.json`, and pinned `mkc.json`.
-2. Compile Static TypeScript with `mkc build -j --no-colors` (Maker also specifies the Circuit Playground Express hardware variant). Require exit 0, `Build OK`, and no error diagnostics.
-3. Load the same pinned target compiler worker and obtain target compile options.
-4. Set `main.ts`, add `main.blocks`, set `ast = true` and `errorOnGreyBlocks = true`, then call the compiler worker operation `decompile` for `main.ts`.
-5. Require `result.success`, no error diagnostics, and non-empty `outfiles["main.blocks"]`.
-6. Independently reject XML containing `<block type="typescript_statement">`.
-7. Load/recompile the emitted Blocks and record round-trip diagnostics.
-8. Write target/PXT release IDs, diagnostics, output hashes, and grey-block count into `makeCodeValidation` in a derived result file; keep the raw JSONL immutable.
+1. Build an isolated in-memory project with `main.ts`, `main.blocks`, and target-specific `pxt.json`. Maker also sets the Circuit Playground Express hardware variant.
+2. Compile through the pinned worker. Require `success` and no error diagnostics.
+3. Decompile `main.ts` with `ast = true` and `errorOnGreyBlocks = true`. Require `success`, no error diagnostics, and non-empty `outfiles["main.blocks"]`.
+4. Independently reject XML containing `<block type="typescript_statement">`.
+5. Recompile the emitted Blocks when the decompile step succeeded, and record `roundTripOk`. If that step throws, store `null` and award no round-trip points.
+6. Write target/PXT release IDs, diagnostics, output hashes, and grey-block count into `makecode-validation.jsonl`. Leave `results.jsonl` unchanged.
 
-`mkc build` alone is insufficient: it tests compilation but has no decompile command. The decompile operation is the same target compiler path used when the MakeCode editor switches JavaScript back to Blocks. Pin `mkc.json.targetWebsite` to an immutable version or SHA-indexed target build, not stable/beta URLs; pin package dependencies and the Maker hardware variant too.
+`mkc build` alone is insufficient: it tests compilation but has no decompile command. Do not point `mkc.json.targetWebsite` at a live origin without a trailing slash. The SHA-indexed CDN worker is the pin.
+
+Managed generation uses the same module inside `runGenerationLoop` via `runDecompile`. The extension and BYOK routes omit that callback, so they still use the student-visible Blockly probe after paste.
 
 ### Browser validation
 
@@ -192,7 +195,7 @@ Where direct compiler-worker integration is unavailable, Playwright can load eac
 - `https://arcade.makecode.com/`;
 - `https://maker.makecode.com/` with the pinned board.
 
-The existing `npm run audit:smoke` is not this validation. It visits only micro:bit, stubs Monaco/provider calls, and accepts a log saying the decompile probe passed, failed, or was unavailable. The live audit also stubs Monaco and tests only one prompt. Neither currently compiles/decompiles the corpus for all targets.
+The existing `npm run audit:smoke` is not this validation. It visits only micro:bit, stubs Monaco/provider calls, and accepts a log saying the decompile probe passed, failed, or was unavailable. The live audit also stubs Monaco and tests only one prompt. Corpus compile and decompile run through `evals/makecode-models/run.mjs` and `shared/makecode-decompile.mjs`.
 
 ## What is automated now vs. deferred
 
@@ -203,18 +206,13 @@ Automated now:
 - strict raw JSON and permissive production parser outcomes;
 - Vibbit compatibility prefilter and case criteria;
 - repeated, interleaved sampling for OpenRouter and chat-compatible OpenCode Go/Zen models;
-- latency, resolved model, token usage, provider cost where supplied, prompt hashes, and model metadata snapshots.
+- latency, resolved model, token usage, provider cost where supplied, prompt hashes, and model metadata snapshots;
+- pinned target compile and TypeScript-to-Blocks decompile through `shared/makecode-decompile.mjs`;
+- grey-block/`typescript_statement` rejection and optional Blocks round-trip compilation.
 
-Requires pinned MakeCode infrastructure:
+Still deferred:
 
-- authoritative target API/type checking;
-- target compilation;
-- TypeScript-to-Blocks decompilation;
-- grey-block/`typescript_statement` rejection;
-- Blocks round-trip compilation;
-- visual/browser confirmation of conversion-dialog behavior and Vibbit's retry/fallback policy.
-
-Until that second stage exists, the suite is suitable for corpus review and inexpensive model screening, not a final model-selection claim.
+- visual/browser confirmation of conversion-dialog behaviour and Vibbit's retry/fallback policy on the live editors.
 
 ## Sources
 

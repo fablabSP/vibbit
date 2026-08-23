@@ -21,6 +21,9 @@
     "audit:live": "node scripts/audit/live.mjs",
     "audit:install": "npx playwright install chromium"
   },
+  "dependencies": {
+    "makecode": "^1.3.5"
+  },
   "devDependencies": {
     "canvas": "^3.2.1",
     "playwright": "^1.58.2"
