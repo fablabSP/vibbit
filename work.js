@@ -3087,7 +3087,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         /(^|[^|])\|([^|=]|$)/m,
         /(^|[^&])&([^&=]|$)/m
       ];
-      const eventRegistrationRe = /\b(?:basic\.forever|basic\.onStart|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
+      const eventRegistrationRe = /\b(?:basic\.forever|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
 
       if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(code)) {
         return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
@@ -3107,8 +3107,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
       if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
       if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
-      // Live MakeCode cannot convert basic.onStart() back to the on start block.
-      if (/\bbasic\.onStart\s*\(/.test(stringStrippedCode)) violations.push("basic.onStart()");
+      // Live MakeCode cannot convert onStart() / basic.onStart() back to the on start block.
+      // Require a non-member prefix so Arcade APIs such as game.onStart are not banned.
+      if (/(?:^|[^\w.])(?:basic\.)?onStart\s*\(/.test(stringStrippedCode)) violations.push("basic.onStart()");
       if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
       if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
 

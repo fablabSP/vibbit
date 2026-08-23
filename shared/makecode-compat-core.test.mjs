@@ -127,8 +127,24 @@ test("basic.onStart is rejected even at the top level", () => {
   ].join("\n");
   const nestedResult = validateBlocksCompatibility(nested, "microbit");
   assert.equal(nestedResult.ok, false);
-  assert.ok(nestedResult.violations.includes("nested event registration"));
   assert.ok(nestedResult.violations.includes("basic.onStart()"));
+  assert.ok(
+    !nestedResult.violations.includes("nested event registration"),
+    "onStart is not a nestable handler; the unwrap hint must be the only signal"
+  );
+
+  const bare = "onStart(function () { basic.showString(\"Hi\") })";
+  const bareResult = validateBlocksCompatibility(bare, "microbit");
+  assert.equal(bareResult.ok, false);
+  assert.ok(bareResult.violations.includes("basic.onStart()"));
+
+  const otherTarget = "game.onStart(function () { })";
+  const otherResult = validateBlocksCompatibility(otherTarget, "arcade");
+  assert.ok(!otherResult.violations.includes("basic.onStart()"));
+
+  const inString = "basic.showString(\"call basic.onStart( now\")";
+  const inStringResult = validateBlocksCompatibility(inString, "microbit");
+  assert.ok(!inStringResult.violations.includes("basic.onStart()"), inStringResult.violations.join(", "));
 });
 
 test("correction instruction turns violations into actionable fixes", () => {
@@ -138,6 +154,13 @@ test("correction instruction turns violations into actionable fixes", () => {
   assert.ok(message.includes("options._pickRandom()"));
   assert.ok(message.includes("Problems:"));
   assert.ok(message.includes("Fix by:"));
+});
+
+test("onStart correction tells the model to unwrap, not to hoist the wrapper", () => {
+  const message = buildCorrectionInstruction(["basic.onStart()"], "microbit");
+  assert.match(message, /top-level statements/i);
+  assert.match(message, /on start block/i);
+  assert.ok(!/move event handlers and functions to the top level/i.test(message));
 });
 
 test("strict correction instruction escalates and targets the right platform", () => {
