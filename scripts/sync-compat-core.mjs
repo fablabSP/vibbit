@@ -17,10 +17,14 @@ const markerEndToken = "  // END_SHARED_COMPAT_CORE";
 
 function stripExports(source) {
   let transformed = source
+    .replace(/^export\s+async\s+function\s+/gm, "async function ")
     .replace(/^export\s+(const|function)\s+/gm, "$1 ")
     .replace(/^export\s+\{[\s\S]*?\};?\s*$/gm, "")
     .trim();
   transformed = transformed.replace(/const SHARED_COMPAT_EXPORT_NAMES = \[[\s\S]*?\];\n*/m, "");
+  if (/^export\b/m.test(transformed)) {
+    throw new Error("Compat core still contains export after strip. Update stripExports().");
+  }
   return transformed.trim();
 }
 

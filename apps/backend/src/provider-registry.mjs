@@ -1,3 +1,4 @@
+import { serializeTranscript } from "../../../shared/makecode-compat-core.mjs";
 import { callOpenAICompatible, callOpenAIResponsesCompatible } from "./openai-compat.mjs";
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -127,6 +128,7 @@ export async function callManagedProvider({
   model,
   system,
   user,
+  messages,
   signal,
   customBaseUrl = "",
   temperature = 0.1,
@@ -144,8 +146,11 @@ export async function callManagedProvider({
 
   if (selectedProvider === "gemini") {
     const url = `${GEMINI_API_ROOT}/models/${encodeURIComponent(selectedModel)}:generateContent`;
+    const flattened = Array.isArray(messages) && messages.length
+      ? serializeTranscript(messages)
+      : { system, user };
     const body = {
-      contents: [{ role: "user", parts: [{ text: `${String(system || "")}\n\n${String(user || "")}` }] }],
+      contents: [{ role: "user", parts: [{ text: `${String(flattened.system || "")}\n\n${String(flattened.user || "")}` }] }],
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens
@@ -182,6 +187,7 @@ export async function callManagedProvider({
       model: openCodeTarget ? openCodeTarget.model : selectedModel,
       system,
       user,
+      messages,
       signal,
       temperature: selectedTemperature,
       maxTokens,
@@ -195,6 +201,7 @@ export async function callManagedProvider({
     model: openCodeTarget ? openCodeTarget.model : selectedModel,
     system,
     user,
+    messages,
     signal,
     temperature: selectedTemperature,
     maxTokens,

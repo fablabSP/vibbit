@@ -10,12 +10,26 @@ function joinChatCompletionsUrl(baseUrl) {
   return `${raw}/chat/completions`;
 }
 
+function transcriptOrPair(messages, system, user) {
+  if (Array.isArray(messages) && messages.length) {
+    return messages.map((item) => ({
+      role: item && item.role ? String(item.role) : "user",
+      content: item && item.content != null ? String(item.content) : ""
+    }));
+  }
+  return [
+    { role: "system", content: String(system || "") },
+    { role: "user", content: String(user || "") }
+  ];
+}
+
 export async function callOpenAICompatible({
   apiKey,
   baseUrl,
   model,
   system,
   user,
+  messages,
   signal,
   temperature = 0.1,
   maxTokens = 3072,
@@ -29,10 +43,7 @@ export async function callOpenAICompatible({
   const body = {
     model: String(model || "").trim() || "gpt-4o-mini",
     max_tokens: maxTokens,
-    messages: [
-      { role: "system", content: String(system || "") },
-      { role: "user", content: String(user || "") }
-    ]
+    messages: transcriptOrPair(messages, system, user)
   };
   if (!/(?:^|\/)gpt-5\.6-luna$/i.test(body.model)) body.temperature = temperature;
   if (reasoning && typeof reasoning === "object") body.reasoning = reasoning;
@@ -74,6 +85,7 @@ export async function callOpenAIResponsesCompatible({
   model,
   system,
   user,
+  messages,
   signal,
   temperature = 0.1,
   maxTokens = 3072,
@@ -86,10 +98,7 @@ export async function callOpenAIResponsesCompatible({
   const body = {
     model: String(model || "").trim(),
     max_output_tokens: maxTokens,
-    input: [
-      { role: "system", content: String(system || "") },
-      { role: "user", content: String(user || "") }
-    ]
+    input: transcriptOrPair(messages, system, user)
   };
   if (!/^gpt-/i.test(body.model)) body.temperature = temperature;
 

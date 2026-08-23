@@ -2,13 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  buildCorrectionInstruction,
   buildSystemPrompt,
   buildUserPrompt,
   normaliseFeedback,
-  parseModelOutput,
-  stubForTarget,
-  validateBlocksCompatibility
+  runGenerationLoop,
+  serializeTranscript
 } from "../../../shared/makecode-compat-core.mjs";
 import {
   joinHtmlResponse,
@@ -39,6 +37,10 @@ const MAX_JSON_BYTES = 256 * 1024;
 const MAX_REQUEST_CHARS = 4000;
 const MAX_CURRENT_CODE_CHARS = 50000;
 const MAX_PAGE_ERROR_CHARS = 500;
+const MAX_RECENT_CHAT_TURNS = 4;
+const MAX_RECENT_CHAT_CHARS = 400;
+const MAX_ORACLE_MISS_REASON_CHARS = 220;
+const MAX_ORACLE_MISS_GREY_BLOCKS = 32;
 const MAX_UPSTREAM_ATTEMPTS = 3;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 10;
@@ -639,17 +641,18 @@ function withTimeout(promise, timeoutMs) {
   return wrapped;
 }
 
-function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
+function userPromptFor(request, currentCode, pageErrors, conversionDialog, recentChat) {
   return buildUserPrompt({
     request,
     currentCode,
     pageErrors,
-    conversionDialog
+    conversionDialog,
+    recentChat
   });
 }
 
 async function generateManaged(
-  { target, request, currentCode, pageErrors, conversionDialog, provider, model },
+  { target, request, currentCode, pageErrors, conversionDialog, provider, model, recentChat },
   runtimeConfig,
   providerConfig,
   { onUpstreamAttempt, outboundUrlPolicy } = {}
@@ -661,8 +664,14 @@ async function generateManaged(
     : "";
 
   const system = buildSystemPrompt(target);
-  const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
-  let upstreamAttempts = 0;
+  const user = userPromptFor(
+    request,
+    currentCode || "",
+    pageErrors || [],
+    conversionDialog || null,
+    recentChat || []
+  );
+  let providerCalls = 0;
   const maxAttempts = Math.min(
     MAX_UPSTREAM_ATTEMPTS,
     1 + (runtimeConfig.emptyRetries || 0) + (runtimeConfig.validationRetries || 0)
@@ -672,86 +681,53 @@ async function generateManaged(
     ? (url, init) => outboundUrlPolicy.fetchSafe(url, init, { purpose: "managed provider endpoint" })
     : fetch;
 
-  const callProvider = async (systemPrompt) => {
-    if (upstreamAttempts >= maxAttempts) {
-      throw new Error("Upstream attempt limit reached");
-    }
-    upstreamAttempts += 1;
-    try {
-      const raw = await withTimeout(async (signal) => {
-        return callManagedProvider({
-          provider: selected.provider,
-          apiKey: selected.key,
-          model: selected.model,
-          system: systemPrompt,
-          user,
-          signal,
-          customBaseUrl: providerBaseUrl,
-          fetchImpl
-        });
-      }, runtimeConfig.requestTimeoutMs);
-      if (typeof onUpstreamAttempt === "function") {
-        await onUpstreamAttempt({ success: true, attempt: upstreamAttempts });
+  const result = await runGenerationLoop({
+    target,
+    systemPrompt: system,
+    initialUserPrompt: user,
+    emptyRetries: runtimeConfig.emptyRetries || 0,
+    validationRetries: runtimeConfig.validationRetries || 0,
+    maxAttempts,
+    callModel: async (messages) => {
+      if (providerCalls >= maxAttempts) {
+        throw new Error("Upstream attempt limit reached");
       }
-      return raw;
-    } catch (error) {
-      if (typeof onUpstreamAttempt === "function") {
-        await onUpstreamAttempt({ success: false, attempt: upstreamAttempts, error });
+      providerCalls += 1;
+      try {
+        const raw = await withTimeout(async (signal) => {
+          const flat = serializeTranscript(messages);
+          return callManagedProvider({
+            provider: selected.provider,
+            apiKey: selected.key,
+            model: selected.model,
+            messages,
+            system: flat.system,
+            user: flat.user,
+            signal,
+            customBaseUrl: providerBaseUrl,
+            fetchImpl
+          });
+        }, runtimeConfig.requestTimeoutMs);
+        if (typeof onUpstreamAttempt === "function") {
+          await onUpstreamAttempt({ success: true, attempt: providerCalls });
+        }
+        return raw;
+      } catch (error) {
+        if (typeof onUpstreamAttempt === "function") {
+          await onUpstreamAttempt({ success: false, attempt: providerCalls, error });
+        }
+        throw error;
       }
-      throw error;
     }
-  };
-
-  const oneAttempt = async (extraSystem, insistOnlyCode) => {
-    const prompt = system
-      + (extraSystem ? ("\n" + extraSystem) : "")
-      + (insistOnlyCode ? "\nMANDATE: Output only compact JSON with keys feedback (array) and code (string). No prose." : "");
-    const raw = await callProvider(prompt);
-    const parsed = parseModelOutput(raw);
-    const code = parsed.code;
-    const validation = code ? validateBlocksCompatibility(code, target) : { ok: false, violations: ["empty output"] };
-    return { code, feedback: parsed.feedback, validation };
-  };
-
-  let result = await oneAttempt("", false);
-
-  for (let i = 0; i < runtimeConfig.emptyRetries && upstreamAttempts < maxAttempts && (!result.code || !result.code.trim()); i++) {
-    result = await oneAttempt("Your last message had empty code. Return valid JSON only with feedback[] and code string.", true);
-  }
-
-  for (let i = 0; i < runtimeConfig.validationRetries && upstreamAttempts < maxAttempts && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
-    const violations = result.validation.violations || [];
-    const extra = buildCorrectionInstruction(violations, target, { strict: i > 0 });
-    result = await oneAttempt(extra, true);
-  }
-
-  if (!result.code || !result.code.trim()) {
-    return {
-      code: stubForTarget(target),
-      feedback: normaliseFeedback(
-        [...(result.feedback || []), "Model returned no code; provided fallback stub."],
-        DEFAULT_FEEDBACK
-      ),
-      upstreamAttempts
-    };
-  }
-
-  if (!result.validation || !result.validation.ok) {
-    const violations = (result.validation && result.validation.violations) || [];
-    return {
-      code: stubForTarget(target),
-      feedback: normaliseFeedback(
-        [...(result.feedback || []), "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")],
-        DEFAULT_FEEDBACK
-      ),
-      upstreamAttempts
-    };
-  }
+  });
 
   return {
     code: result.code,
     feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK),
-    upstreamAttempts
+    validation: result.validation,
+    upstreamAttempts: result.upstreamAttempts,
+    outcome: result.outcome,
+    attempts: result.attempts
   };
 }
 
@@ -759,6 +735,32 @@ function extractBearerToken(headerValue) {
   if (!headerValue) return "";
   const match = String(headerValue).match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : "";
+}
+
+function sanitiseRecentChat(raw) {
+  if (!Array.isArray(raw)) return [];
+  const turns = [];
+  for (const item of raw) {
+    if (turns.length >= MAX_RECENT_CHAT_TURNS) break;
+    if (!item || typeof item !== "object") continue;
+    const role = item.role === "assistant" ? "assistant" : (item.role === "user" ? "user" : "");
+    if (!role) continue;
+    const text = String(item.content || item.notes || "").replace(/\s+/g, " ").trim().slice(0, MAX_RECENT_CHAT_CHARS);
+    if (!text) continue;
+    if (role === "user") turns.push({ role, content: text });
+    else turns.push({ role, notes: text });
+  }
+  return turns;
+}
+
+function sanitiseOracleMissPayload(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const reason = String(source.reason || "").replace(/\s+/g, " ").trim().slice(0, MAX_ORACLE_MISS_REASON_CHARS);
+  const greyRaw = Number(source.greyBlocks);
+  const greyBlocks = Number.isFinite(greyRaw)
+    ? Math.min(MAX_ORACLE_MISS_GREY_BLOCKS, Math.max(0, Math.trunc(greyRaw)))
+    : 0;
+  return { reason, greyBlocks };
 }
 
 function validatePayload(payload) {
@@ -781,6 +783,7 @@ function validatePayload(payload) {
       description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 1000)
     }
     : null;
+  const recentChat = sanitiseRecentChat(payload && payload.recentChat);
 
   const hasAutoFixContext = pageErrors.length > 0
     || (conversionDialog && (conversionDialog.title || conversionDialog.description));
@@ -804,6 +807,7 @@ function validatePayload(payload) {
       currentCode,
       pageErrors,
       conversionDialog,
+      recentChat,
       provider,
       model
     }
@@ -1988,7 +1992,10 @@ export function createBackendRuntime(options = {}) {
           );
           return respondJson(200, {
             code: result.code,
-            feedback: result.feedback
+            feedback: result.feedback,
+            outcome: result.outcome,
+            upstreamAttempts: result.upstreamAttempts,
+            validationOk: result.outcome === "ok"
           }, origin, runtimeConfig);
         } finally {
           if (typeof reservation.release === "function") reservation.release();
@@ -2005,6 +2012,29 @@ export function createBackendRuntime(options = {}) {
         const { status, message } = classifyRequestError(error, runtimeConfig);
         const statusCode = /too large/i.test(message) ? 413 : status;
         return respondJson(statusCode, { error: message }, origin, runtimeConfig);
+      }
+    }
+
+    if (pathname === "/vibbit/oracle-miss" && request.method === "POST") {
+      try {
+        if (!isGenerateRequestAuthorised(request, runtimeConfig, sessionStore)) {
+          return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+        }
+        const session = getRequestSession(request, sessionStore);
+        if (getAuthMode(runtimeConfig) === "classroom" && !session) {
+          return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+        }
+        const payload = await readJson(request, 16 * 1024);
+        sanitiseOracleMissPayload(payload);
+        const classroomId = session && session.meta && session.meta.classroomId
+          ? String(session.meta.classroomId)
+          : "";
+        // Count only. Do not persist reason, snippets, or code.
+        await usageStore.recordOracleMiss(classroomId || "legacy");
+        return respondJson(200, { ok: true }, origin, runtimeConfig);
+      } catch (error) {
+        const { status, message } = classifyRequestError(error, runtimeConfig);
+        return respondJson(status, { error: message }, origin, runtimeConfig);
       }
     }
 

@@ -718,6 +718,32 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return error;
   };
 
+  const createGreyBlockError = (probe) => {
+    const snippets = probe && Array.isArray(probe.snippets) ? probe.snippets.slice(0, 3) : [];
+    const details = snippets.length ? (" Examples: " + snippets.join(" | ")) : "";
+    const reason = (probe && probe.reason) || "Code failed live blocks decompile check.";
+    const error = new Error(reason + details);
+    error.code = "E_GREY_BLOCKS";
+    error.greyBlocks = probe && probe.greyBlocks ? Number(probe.greyBlocks) || 0 : 0;
+    error.snippets = snippets;
+    error.reason = reason;
+    return error;
+  };
+
+  const isGreyBlockError = (error) => {
+    if (!error) return false;
+    if (error.code === "E_GREY_BLOCKS") return true;
+    const message = error && error.message ? String(error.message) : String(error);
+    return /grey JavaScript block/i.test(message);
+  };
+
+  const generatePassedStaticOracle = (result, code) => {
+    if (result && result.validationOk === false) return false;
+    if (result && (result.outcome === "stub-empty" || result.outcome === "stub-invalid")) return false;
+    if (result && result.validationOk === true) return true;
+    return Boolean(code && String(code).trim());
+  };
+
   const isConversionDialogError = (error) => {
     if (!error) return false;
     if (error.code === "E_BLOCKS_CONVERT_DIALOG") return true;
@@ -1993,10 +2019,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             return;
           }
           if (!probe.ok) {
-            const details = probe.snippets && probe.snippets.length
-              ? (" Examples: " + probe.snippets.join(" | "))
-              : "";
-            throw new Error((probe.reason || "Code failed live blocks decompile check.") + details);
+            throw createGreyBlockError(probe);
           }
           logLine("Live decompile check passed (no grey blocks).");
         });
@@ -2048,6 +2071,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     buildCorrectionInstruction,
     stubForTarget,
     extractGeminiText,
+    runValidateBlocks,
+    buildFailedAttemptUserTurn,
+    buildDecompileFixRequest,
+    serializeTranscript,
+    runGenerationLoop,
   } = (() => {
     function sanitizeMakeCode(input) {
       if (!input) return "";
@@ -3227,6 +3255,197 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return "";
     }
 
+    function runValidateBlocks(code, target) {
+      return validateBlocksCompatibility(code, target);
+    }
+
+    function transcriptTurn(role, content) {
+      return { role, content: content == null ? "" : String(content) };
+    }
+
+    function buildFailedAttemptUserTurn({
+      code,
+      validation,
+      target,
+      kind,
+      strict = false
+    } = {}) {
+      const failedProgramme = code == null ? "" : String(code);
+      const lines = [
+        "<<<FAILED_ATTEMPT>>>",
+        failedProgramme,
+        "<<<END_FAILED_ATTEMPT>>>"
+      ];
+      if (kind === "empty") {
+        lines.push("Your previous reply had empty code. Return a complete MakeCode programme as JSON only.");
+      } else {
+        const violations = validation && Array.isArray(validation.violations) ? validation.violations : [];
+        lines.push(buildCorrectionInstruction(violations, target, { strict: Boolean(strict) }));
+      }
+      lines.push("Return ONLY one compact JSON object: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript\"}. No prose.");
+      return lines.join("\n");
+    }
+
+    function buildDecompileFixRequest({ greyBlocks, snippets, reason } = {}) {
+      const count = Math.max(0, Math.trunc(Number(greyBlocks) || 0));
+      const why = String(reason || "").trim();
+      const examples = (Array.isArray(snippets) ? snippets : [])
+        .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      const parts = [
+        "Fix the current JavaScript so MakeCode decompiles it to native Blocks.",
+        "There must be no grey typescript_statement blocks.",
+        "Preserve intended behaviour."
+      ];
+      if (count) parts.push("Grey block count: " + count + ".");
+      if (why) parts.push("Reason: " + why);
+      if (examples.length) parts.push("Grey snippets: " + examples.join(" | "));
+      return parts.join(" ");
+    }
+
+    function serializeTranscript(messages) {
+      const list = Array.isArray(messages) ? messages : [];
+      const systemParts = [];
+      const rest = [];
+      for (const item of list) {
+        if (!item || typeof item !== "object") continue;
+        const role = item.role;
+        const content = item.content == null ? "" : String(item.content);
+        if (role === "system") {
+          systemParts.push(content);
+          continue;
+        }
+        if (role === "user" || role === "assistant") {
+          rest.push({ role, content });
+        }
+      }
+      const system = systemParts.join("\n\n");
+      if (rest.length === 1 && rest[0].role === "user") {
+        return { system, user: rest[0].content };
+      }
+      const user = rest.map((turn) => {
+        const tag = turn.role === "assistant" ? "<<<ASSISTANT>>>" : "<<<USER>>>";
+        return tag + "\n" + turn.content;
+      }).join("\n");
+      return { system, user };
+    }
+
+    async function runGenerationLoop({
+      target,
+      systemPrompt,
+      initialUserPrompt,
+      emptyRetries = 0,
+      validationRetries = 0,
+      maxAttempts = 1,
+      callModel
+    } = {}) {
+      const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
+      let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
+      let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
+      let validationRetried = false;
+
+      const messages = [
+        transcriptTurn("system", systemPrompt),
+        transcriptTurn("user", initialUserPrompt)
+      ];
+      const attempts = [];
+      let last = null;
+
+      while (attempts.length < attemptLimit) {
+        const raw = await callModel(messages);
+        const parsed = parseModelOutput(raw);
+        const code = sanitizeMakeCode(parsed.code);
+        const validation = runValidateBlocks(code, target);
+        // Empty source can pass the static validator; treat it as empty, not ok.
+        const reason = !String(code || "").trim()
+          ? "empty"
+          : (validation.ok ? "ok" : "invalid");
+        last = {
+          raw: raw == null ? "" : String(raw),
+          code,
+          feedback: parsed.feedback,
+          validation,
+          reason
+        };
+        attempts.push(last);
+
+        if (reason === "ok") break;
+        if (attempts.length >= attemptLimit) break;
+
+        if (reason === "empty" && emptyLeft > 0) {
+          emptyLeft -= 1;
+          const assistantContent = String(raw || "").trim() || code || "(empty)";
+          messages.push(transcriptTurn("assistant", assistantContent));
+          messages.push(transcriptTurn("user", buildFailedAttemptUserTurn({
+            code,
+            validation,
+            target,
+            kind: "empty"
+          })));
+          continue;
+        }
+
+        if (reason === "invalid" && validationLeft > 0) {
+          validationLeft -= 1;
+          messages.push(transcriptTurn("assistant", code));
+          messages.push(transcriptTurn("user", buildFailedAttemptUserTurn({
+            code,
+            validation,
+            target,
+            kind: "invalid",
+            strict: validationRetried
+          })));
+          validationRetried = true;
+          continue;
+        }
+
+        break;
+      }
+
+      const lastValidation = last && last.validation
+        ? last.validation
+        : { ok: false, violations: [] };
+      const lastFeedback = last && Array.isArray(last.feedback) ? last.feedback : [];
+      const upstreamAttempts = attempts.length;
+
+      if (last && last.reason === "ok") {
+        return {
+          code: last.code,
+          feedback: normaliseFeedback(lastFeedback),
+          validation: lastValidation,
+          upstreamAttempts,
+          outcome: "ok",
+          attempts
+        };
+      }
+
+      if (!last || last.reason === "empty") {
+        return {
+          code: stubForTarget(target),
+          feedback: normaliseFeedback(
+            [...lastFeedback, "Model returned no code; provided fallback stub."]
+          ),
+          validation: lastValidation,
+          upstreamAttempts,
+          outcome: "stub-empty",
+          attempts
+        };
+      }
+
+      const violations = lastValidation.violations || [];
+      return {
+        code: stubForTarget(target),
+        feedback: normaliseFeedback(
+          [...lastFeedback, "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")]
+        ),
+        validation: lastValidation,
+        upstreamAttempts,
+        outcome: "stub-invalid",
+        attempts
+      };
+    }
+
     return {
       sanitizeMakeCode,
       normaliseFeedback,
@@ -3240,6 +3459,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       buildCorrectionInstruction,
       stubForTarget,
       extractGeminiText,
+      runValidateBlocks,
+      buildFailedAttemptUserTurn,
+      buildDecompileFixRequest,
+      serializeTranscript,
+      runGenerationLoop,
     };
   })();
   // END_SHARED_COMPAT_CORE
@@ -3267,6 +3491,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── provider calls ──────────────────────────────────────── */
   const REQ_TIMEOUT_MS = 60000;
   const EMPTY_RETRIES = 2;
+  const VALIDATION_RETRIES = 2;
+  const MAX_UPSTREAM_ATTEMPTS = 3;
 
   const withTimeout = (promise, ms, label) => {
     return Promise.race([
@@ -3494,63 +3720,35 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
     const names = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
     const callProvider = providers[provider] || providers.openai;
+    const providerName = names[provider] || provider;
 
-    const oneAttempt = (extraSystem, insistOnlyCode) => {
-      const prompt = system
-        + (extraSystem ? ("\n" + extraSystem) : "")
-        + (insistOnlyCode ? "\nMANDATE: Output only compact JSON with keys feedback (array) and code (string). No prose." : "");
-      const providerName = names[provider] || provider;
-      logLine("Sending to " + providerName + " (" + (model || "default") + ").");
-      throwIfAborted(signal);
-      return callProvider(apiKey, model, prompt, user, signal).then((raw) => {
+    return runGenerationLoop({
+      target,
+      systemPrompt: system,
+      initialUserPrompt: user,
+      emptyRetries: EMPTY_RETRIES,
+      validationRetries: VALIDATION_RETRIES,
+      maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+      callModel: async (messages) => {
         throwIfAborted(signal);
-        const parsed = parseModelOutput(raw);
-        const code = sanitizeMakeCode(parsed.code);
-        const validation = validateBlocksCompatibility(code, target);
-        return { code, validation, feedback: parsed.feedback };
-      });
-    };
-
-    return oneAttempt(null, false)
-      .then((result) => {
-        if (result.code && result.code.trim()) return result;
-        const retryEmpty = (index, previous) => {
-          if (index >= EMPTY_RETRIES) return previous;
-          const extra = "Your last message had empty code. Return valid JSON only with feedback[] and code string.";
-          return oneAttempt(extra, true).then((next) => {
-            throwIfAborted(signal);
-            if (next.code && next.code.trim()) return next;
-            return retryEmpty(index + 1, next);
-          });
-        };
-        return retryEmpty(0, result);
-      })
-      .then((firstPass) => {
-        if (!firstPass.code || !firstPass.code.trim()) return firstPass;
-        if (firstPass.validation && firstPass.validation.ok) return firstPass;
-        const violations = (firstPass.validation && firstPass.validation.violations) || [];
-        const extra = buildCorrectionInstruction(violations, target, { strict: false });
-        return oneAttempt(extra, true).then((secondPass) => {
-          throwIfAborted(signal);
-          if (secondPass.validation && secondPass.validation.ok) return secondPass;
-          const secondViolations = (secondPass.validation && secondPass.validation.violations) || [];
-          const strictExtra = buildCorrectionInstruction(secondViolations, target, { strict: true });
-          return oneAttempt(strictExtra, true);
-        });
-      })
-      .then((finalResult) => {
-        const feedback = normaliseFeedback(finalResult && finalResult.feedback);
-        if (!finalResult || !finalResult.code || !finalResult.code.trim()) {
-          logLine("Model returned no code after retries. Using minimal stub.");
-          return { code: stubForTarget(target), feedback: normaliseFeedback(feedback.concat(["Model returned no code; provided fallback stub."])) };
-        }
-        if (!finalResult.validation || !finalResult.validation.ok) {
-          const violations = (finalResult.validation && finalResult.validation.violations) || [];
-          logLine("Model output still failed strict validation. Using minimal stub.");
-          return { code: stubForTarget(target), feedback: normaliseFeedback(feedback.concat(["Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")])) };
-        }
-        return { code: finalResult.code, feedback };
-      });
+        const flat = serializeTranscript(messages);
+        logLine("Sending to " + providerName + " (" + (model || "default") + ").");
+        const raw = await callProvider(apiKey, model, flat.system, flat.user, signal);
+        throwIfAborted(signal);
+        return raw;
+      }
+    }).then((result) => {
+      logLine("Generation used " + result.upstreamAttempts + " model attempt(s).");
+      if (result.outcome === "stub-empty") {
+        logLine("Model returned no code after retries. Using minimal stub.");
+      } else if (result.outcome === "stub-invalid") {
+        logLine("Model output still failed strict validation. Using minimal stub.");
+      }
+      return {
+        ...result,
+        validationOk: result.outcome === "ok"
+      };
+    });
   };
 
   const parseJsonSafe = async (response) => {
@@ -3673,6 +3871,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       clearTimeout(timeoutId);
       if (signal) signal.removeEventListener("abort", abortFromCaller);
     }
+  };
+
+  const reportOracleMiss = ({ reason, greyBlocks } = {}) => {
+    const mode = storageGet(STORAGE_MODE) || "byok";
+    const safeReason = String(reason || "").replace(/\s+/g, " ").trim().slice(0, 220);
+    const safeGrey = Math.max(0, Math.trunc(Number(greyBlocks) || 0));
+    if (mode !== "managed") {
+      logLine("oracle_miss validation_ok=1 decompile=fail");
+      return;
+    }
+    const backendUrl = getBackendUrl();
+    buildBackendHeaders(backendUrl).then((headers) => fetch(backendUrl + "/vibbit/oracle-miss", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        reason: safeReason,
+        greyBlocks: safeGrey
+      })
+    })).catch(() => {});
   };
 
   const RECENT_CHAT_TOTAL_CHARS = 1200;
@@ -3798,7 +4015,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     generationController = new AbortController();
     const signal = generationController.signal;
     let conversionRetryCount = 0;
+    let decompileRetryCount = 0;
     let lastGeneratedCode = "";
+    let lastGeneratePassedOracle = false;
     let finalFeedback = [];
 
     const runGenerationAttempt = (forcedRequest, forcedDlg, options) => {
@@ -3883,7 +4102,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
           if (mode === "managed") {
             logLine("Mode: Managed backend.");
-            return requestBackendGenerate({ target, request: effectiveRequest, currentCode, pageErrors, conversionDialog }, signal);
+            return requestBackendGenerate({
+              target,
+              request: effectiveRequest,
+              currentCode,
+              pageErrors,
+              conversionDialog,
+              recentChat: recentChatContext
+            }, signal);
           }
 
           const provider = storageGet(STORAGE_PROVIDER) || "openai";
@@ -3900,6 +4126,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
           const code = extractCode(result && result.code ? result.code : "");
           lastGeneratedCode = code;
+          lastGeneratePassedOracle = generatePassedStaticOracle(result, code);
+          if (result && (result.outcome || result.validationOk != null)) {
+            logLine("Generate outcome=" + (result.outcome || "unknown") + " validationOk=" + (result.validationOk === false ? "0" : "1") + ".");
+          }
           if (!code) {
             finalFeedback = normaliseFeedback(
               finalFeedback.concat(["Model returned no code for this request."]),
@@ -3919,7 +4149,24 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
               throwIfAborted(signal);
               if (isConversionDialogError(error)) throw error;
               const message = error && error.message ? error.message : String(error);
-              if (!/grey JavaScript block/i.test(message)) throw error;
+              if (!isGreyBlockError(error)) throw error;
+              if (decompileRetryCount < 1) {
+                decompileRetryCount += 1;
+                if (lastGeneratePassedOracle) {
+                  reportOracleMiss({
+                    reason: error.reason || message,
+                    greyBlocks: error.greyBlocks
+                  });
+                }
+                includeCurrentForThisSend = true;
+                logLine("Live decompile check failed: " + message);
+                logLine("Retrying once with a decompile-fix request.");
+                return runGenerationAttempt(buildDecompileFixRequest({
+                  greyBlocks: error.greyBlocks,
+                  snippets: error.snippets,
+                  reason: error.reason || message
+                }), null, { snapshot: false });
+              }
               logLine("Live decompile check failed: " + message);
               logLine("Applying minimal fallback stub.");
               finalFeedback = normaliseFeedback(finalFeedback.concat(["Live editor fallback: " + message]));

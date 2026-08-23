@@ -16,6 +16,7 @@ function emptyBucket() {
     rateLimited: 0,
     inputTokens: 0,
     outputTokens: 0,
+    oracleMisses: 0,
     lastUsedAt: ""
   };
 }
@@ -100,6 +101,11 @@ export function createUsageStore({
         bucket.outputTokens += Math.max(0, Number(outputTokens) || 0);
       });
     },
+    async recordOracleMiss(classroomId) {
+      return record(classroomId, (bucket) => {
+        bucket.oracleMisses += 1;
+      });
+    },
     publicView(classroomId) {
       const today = ensureBucket(classroomId);
       return {
@@ -112,6 +118,7 @@ export function createUsageStore({
         rateLimited: today.rateLimited,
         inputTokens: today.inputTokens,
         outputTokens: today.outputTokens,
+        oracleMisses: today.oracleMisses,
         lastUsedAt: today.lastUsedAt || null
       };
     }
@@ -138,6 +145,7 @@ export function sanitiseUsageState(input) {
         rateLimited: Math.max(0, Number(src.rateLimited) || 0),
         inputTokens: Math.max(0, Number(src.inputTokens) || 0),
         outputTokens: Math.max(0, Number(src.outputTokens) || 0),
+        oracleMisses: Math.max(0, Number(src.oracleMisses) || 0),
         lastUsedAt: String(src.lastUsedAt || "").trim()
       };
     }
