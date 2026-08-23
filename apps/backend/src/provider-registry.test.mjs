@@ -219,3 +219,68 @@ test("callManagedProvider flattens a transcript for Gemini", async () => {
   assert.match(text, /<<<ASSISTANT>>>/);
   assert.match(text, /FAILED_ATTEMPT/);
 });
+
+function assertNoNativeTools(body) {
+  assert.ok(body && typeof body === "object");
+  assert.equal("tools" in body, false);
+  assert.equal("tool_choice" in body, false);
+  assert.equal("functions" in body, false);
+  assert.equal("function_call" in body, false);
+}
+
+test("callManagedProvider does not send native tool-calling fields", async () => {
+  const okChat = new Response(JSON.stringify({
+    choices: [{ message: { content: "OK" } }]
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+  const okGemini = new Response(JSON.stringify({
+    candidates: [{ content: { parts: [{ text: "ok" }] } }]
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+  const okResponses = new Response(JSON.stringify({ output_text: "ok" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+
+  const captured = [];
+  await callManagedProvider({
+    provider: "openai",
+    apiKey: "sk-test",
+    model: "gpt-4o-mini",
+    system: "sys",
+    user: "hello",
+    fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(init.body));
+      return okChat;
+    }
+  });
+  await callManagedProvider({
+    provider: "gemini",
+    apiKey: "gem-key",
+    model: "gemini-2.5-flash",
+    system: "sys",
+    user: "hello",
+    fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(init.body));
+      return okGemini;
+    }
+  });
+  await callManagedProvider({
+    provider: "openai",
+    apiKey: "sk-test",
+    model: "gpt-5.6-luna",
+    system: "sys",
+    user: "hello",
+    fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(init.body));
+      return okResponses;
+    }
+  });
+
+  assert.equal(captured.length, 3);
+  for (const body of captured) assertNoNativeTools(body);
+});
