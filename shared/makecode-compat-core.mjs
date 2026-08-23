@@ -421,6 +421,34 @@ function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function templateHasInterpolation(source) {
+  const input = String(source || "");
+  let inTemplate = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    const next = i + 1 < input.length ? input[i + 1] : "";
+    if (!inTemplate) {
+      if (char === "`") inTemplate = true;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "`") {
+      inTemplate = false;
+      continue;
+    }
+    if (char === "$" && next === "{") return true;
+  }
+  return false;
+}
+
 function stripNonCodeSegments(source) {
   const input = String(source || "");
   const chars = input.split("");
@@ -1010,7 +1038,7 @@ export function validateBlocksCompatibility(code, target) {
     { re: /\bnew\s+[A-Z_a-z]/g, why: "new constructor" },
     { re: /\bPromise\b|\basync\b|\bawait\b/g, why: "promises/async" },
     { re: /\bimport\s|\bexport\s/g, why: "import/export" },
-    { re: /\$\{[^}]+\}/g, why: "template string interpolation" },
+    { test: templateHasInterpolation, why: "template string interpolation" },
     { re: /\.\s*(map|forEach|filter|reduce|find|some|every)\s*\(/g, why: "higher-order array methods" },
     { re: /\bnamespace\b|\bmodule\b/g, why: "namespaces/modules" },
     { re: /\benum\b|\binterface\b|\btype\s+[A-Z_a-z]/g, why: "TS types/enums" },
@@ -1030,33 +1058,46 @@ export function validateBlocksCompatibility(code, target) {
   ];
   const eventRegistrationRe = /\b(?:basic\.forever|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
 
-  if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(code)) {
+  const codeView = stripNonCodeSegments(code);
+  const stringView = code.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    (match) => " ".repeat(match.length)
+  );
+
+  if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(codeView)) {
     return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
   }
-  if (target === "arcade" && (/led\./i.test(code) || /radio\./i.test(code))) {
+  if (target === "arcade" && (/led\./i.test(codeView) || /radio\./i.test(codeView))) {
     return { ok: false, violations: ["micro:bit APIs in Arcade"] };
   }
 
   const violations = [];
-  const stringStrippedCode = code.replace(
-    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
-    (match) => " ".repeat(match.length)
-  );
   for (const rule of rules) {
-    if (rule.re.test(code)) violations.push(rule.why);
+    if (typeof rule.test === "function") {
+      if (rule.test(code)) violations.push(rule.why);
+      continue;
+    }
+    const haystack = (rule.why === "line comments" || rule.why === "block comments")
+      ? stringView
+      : codeView;
+    rule.re.lastIndex = 0;
+    if (rule.re.test(haystack)) violations.push(rule.why);
   }
-  if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
-  if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
-  if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
+  if (/\bnull\b/.test(stringView)) violations.push("null");
+  if (/\bundefined\b/.test(stringView)) violations.push("undefined");
+  if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringView)) violations.push("casts");
   // Live MakeCode cannot convert onStart() / basic.onStart() back to the on start block.
   // Require a non-member prefix so Arcade APIs such as game.onStart are not banned.
-  if (/(?:^|[^\w.])(?:basic\.)?onStart\s*\(/.test(stringStrippedCode)) violations.push("basic.onStart()");
-  if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
-  if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
+  if (/(?:^|[^\w.])(?:basic\.)?onStart\s*\(/.test(stringView)) violations.push("basic.onStart()");
+  if (bitwiseRules.some((rule) => {
+    rule.lastIndex = 0;
+    return rule.test(codeView);
+  })) violations.push("bitwise operators");
+  if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(codeView)) violations.push("for...in loops");
 
   const forHeaderRe = /for\s*\(([^)]*)\)/g;
   let forMatch;
-  while ((forMatch = forHeaderRe.exec(code))) {
+  while ((forMatch = forHeaderRe.exec(codeView))) {
     const header = forMatch[1].trim();
     if (/\bof\b/.test(header)) continue;
     const parts = header.split(";").map((part) => part.trim());
@@ -1078,7 +1119,7 @@ export function validateBlocksCompatibility(code, target) {
     }
   }
 
-  const lines = code.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const lines = codeView.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   let depth = 0;
   for (const line of lines) {
     const trimmed = line.trim();

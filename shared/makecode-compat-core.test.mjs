@@ -147,6 +147,65 @@ test("basic.onStart is rejected even at the top level", () => {
   assert.ok(!inStringResult.violations.includes("basic.onStart()"), inStringResult.violations.join(", "));
 });
 
+test("string literals do not trip forbidden-construct rules", () => {
+  const arrowText = 'basic.showString("press => to continue")';
+  const arrowResult = validateBlocksCompatibility(arrowText, "microbit");
+  assert.equal(arrowResult.ok, true, arrowResult.violations.join(", "));
+
+  const classText = 'basic.showString("class")';
+  const classResult = validateBlocksCompatibility(classText, "microbit");
+  assert.equal(classResult.ok, true, classResult.violations.join(", "));
+
+  const ledPattern = [
+    "basic.showLeds(`",
+    "    . . class . .",
+    "    . . . . .",
+    "    . . . . .",
+    "    . . . . .",
+    "    . . . . .",
+    "`)"
+  ].join("\n");
+  const ledResult = validateBlocksCompatibility(ledPattern, "microbit");
+  assert.equal(ledResult.ok, true, ledResult.violations.join(", "));
+  assert.ok(!ledResult.violations.includes("classes"));
+  assert.ok(!ledResult.violations.includes("template string interpolation"));
+});
+
+test("comments inside strings are not treated as comments", () => {
+  const url = 'basic.showString("http://makecode.microbit.org")';
+  const urlResult = validateBlocksCompatibility(url, "microbit");
+  assert.equal(urlResult.ok, true, urlResult.violations.join(", "));
+  assert.ok(!urlResult.violations.includes("line comments"));
+
+  const nested = 'basic.showString("/* class */")';
+  const nestedResult = validateBlocksCompatibility(nested, "microbit");
+  assert.equal(nestedResult.ok, true, nestedResult.violations.join(", "));
+  assert.ok(!nestedResult.violations.includes("block comments"));
+  assert.ok(!nestedResult.violations.includes("classes"));
+});
+
+test("real forbidden constructs still fail after string stripping", () => {
+  const arrow = "input.onButtonPressed(Button.A, () => { basic.showIcon(IconNames.Heart) })";
+  const arrowResult = validateBlocksCompatibility(arrow, "microbit");
+  assert.equal(arrowResult.ok, false);
+  assert.ok(arrowResult.violations.includes("arrow functions"));
+
+  const constructed = "let sprite = new Sprite()";
+  const constructedResult = validateBlocksCompatibility(constructed, "arcade");
+  assert.equal(constructedResult.ok, false);
+  assert.ok(constructedResult.violations.includes("new constructor"));
+
+  const commented = 'basic.showString("Hi")\n// students: press A';
+  const commentedResult = validateBlocksCompatibility(commented, "microbit");
+  assert.equal(commentedResult.ok, false);
+  assert.ok(commentedResult.violations.includes("line comments"));
+
+  const interpolated = "basic.showString(`press ${name}`)";
+  const interpolatedResult = validateBlocksCompatibility(interpolated, "microbit");
+  assert.equal(interpolatedResult.ok, false);
+  assert.ok(interpolatedResult.violations.includes("template string interpolation"));
+});
+
 test("correction instruction turns violations into actionable fixes", () => {
   const message = buildCorrectionInstruction(["arrow functions", "randint()"], "microbit");
   assert.ok(message.includes("micro:bit"));
@@ -274,6 +333,23 @@ test("generation loop retries invalid output and the next user turn includes FAI
   assert.ok(second[3].content.includes("<<<FAILED_ATTEMPT>>>"));
   assert.ok(second[3].content.includes(ARROW_UNSAFE));
   assert.ok(second[3].content.includes("arrow functions"));
+});
+
+test("generation loop accepts legal programmes whose strings mention forbidden tokens", async () => {
+  const legal = 'basic.showString("press => to continue")';
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "prompt the student",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async () => jsonOutput(legal, ["ok"])
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 1);
+  assert.equal(result.code, legal);
+  assert.equal(result.validation.ok, true);
 });
 
 test("generation loop stubs empty and invalid outcomes", async () => {
