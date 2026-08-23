@@ -342,7 +342,6 @@ const MICROBIT_CALL_SIGNATURES = [
   { call: "basic.showArrow", minArgs: 1, maxArgs: 2 },
   { call: "basic.clearScreen", minArgs: 0, maxArgs: 0 },
   { call: "basic.forever", minArgs: 1, maxArgs: 1 },
-  { call: "basic.onStart", minArgs: 1, maxArgs: 1 },
   { call: "basic.pause", minArgs: 1, maxArgs: 1 },
   { call: "input.onButtonPressed", minArgs: 2, maxArgs: 2 },
   { call: "input.onGesture", minArgs: 2, maxArgs: 2 },
@@ -414,7 +413,8 @@ const MICROBIT_CALL_SIGNATURES = [
 const MICROBIT_BLOCKS_TEST_EXAMPLES = [
   "input.onButtonPressed(Button.A, function () { basic.showIcon(IconNames.Heart) })",
   "basic.forever(function () { led.toggle(2, 2); basic.pause(100) })",
-  "radio.onReceivedNumber(function (receivedNumber) { basic.showNumber(receivedNumber) })"
+  "radio.onReceivedNumber(function (receivedNumber) { basic.showNumber(receivedNumber) })",
+  "basic.showIcon(IconNames.Duck); basic.pause(1000); basic.clearScreen()"
 ];
 
 function escapeRegExp(value) {
@@ -794,6 +794,7 @@ export function buildTargetPromptExtras(target) {
   return [
     "MICRO:BIT BUILT-IN ICON/ENUM RULES (from pxt-microbit):",
     "If the request matches a built-in icon name (for example duck, heart, skull), prefer basic.showIcon(IconNames.<Name>).",
+    "Write startup behaviour as top-level statements. They become the on start block. Do not call basic.onStart.",
     "For known icons, do NOT hand-draw LED art with basic.showLeds(`...`) unless the user explicitly asks for a custom pattern.",
     "Valid IconNames: " + MICROBIT_ICON_NAMES.map((name) => "IconNames." + name).join(", "),
     "Deprecated alias accepted only for compatibility: IconNames.EigthNote (prefer IconNames.EighthNote).",
@@ -813,7 +814,7 @@ export const TARGET_API_CATALOG = {
   microbit: {
     name: "micro:bit",
     apis: [
-      "basic: showNumber(n), showString(s), showIcon(IconNames), showLeds(`...`), showArrow(ArrowNames), clearScreen(), forever(handler), onStart(handler), pause(ms)",
+      "basic: showNumber(n), showString(s), showIcon(IconNames), showLeds(`...`), showArrow(ArrowNames), clearScreen(), forever(handler), pause(ms)",
       "input: onButtonPressed(Button.A/B/AB, handler), onGesture(Gesture.Shake/Tilt/..., handler), onPinPressed(TouchPin.P0/P1/P2, handler), buttonIsPressed(Button), temperature(), lightLevel(), acceleration(Dimension.X/Y/Z), compassHeading(), rotation(Rotation), magneticForce(Dimension), runningTime()",
       "music: playTone(Note, BeatFraction), ringTone(freq), rest(BeatFraction), beat(BeatFraction), tempo(), setTempo(bpm), changeTempoBy(delta)",
       "led: plot(x,y), unplot(x,y), toggle(x,y), point(x,y), brightness(), setBrightness(n), plotBarGraph(value, high), enable(on)",
@@ -919,7 +920,7 @@ function buildBlockSafeDoRules(target) {
     ];
   }
   return [
-    "Use event handlers and loops, e.g. input.onButtonPressed(Button.A, function () { }), basic.forever(function () { }), basic.onStart(function () { }).",
+    "Use event handlers and loops, e.g. input.onButtonPressed(Button.A, function () { }), basic.forever(function () { }). Write startup behaviour as top-level statements; they become the on start block.",
     "Match each block's exact argument count and use only valid enum members (e.g. Button.A, IconNames.Heart).",
     ...common
   ];
@@ -937,7 +938,8 @@ const BLOCK_UNSAFE_RULES = [
   "randint(...) (use options._pickRandom() instead).",
   "null, undefined, casts (as), and bitwise operators (| & ^ << >> >>>) with their compound assignments.",
   "setTimeout, setInterval, console, comments, markdown fences, or any prose outside the JSON.",
-  "Returning a value from a callback/handler, optional or default parameters in your own functions, and assignment operators other than =, +=, -=."
+  "Returning a value from a callback/handler, optional or default parameters in your own functions, and assignment operators other than =, +=, -=.",
+  "basic.onStart(...) (write startup code at the top level instead)."
 ];
 
 const OUTPUT_FORMAT_RULES = [
@@ -1026,7 +1028,7 @@ export function validateBlocksCompatibility(code, target) {
     /(^|[^|])\|([^|=]|$)/m,
     /(^|[^&])&([^&=]|$)/m
   ];
-  const eventRegistrationRe = /\b(?:basic\.forever|basic\.onStart|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
+  const eventRegistrationRe = /\b(?:basic\.forever|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
 
   if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(code)) {
     return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
@@ -1046,6 +1048,9 @@ export function validateBlocksCompatibility(code, target) {
   if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
   if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
   if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
+  // Live MakeCode cannot convert onStart() / basic.onStart() back to the on start block.
+  // Require a non-member prefix so Arcade APIs such as game.onStart are not banned.
+  if (/(?:^|[^\w.])(?:basic\.)?onStart\s*\(/.test(stringStrippedCode)) violations.push("basic.onStart()");
   if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
   if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
 
@@ -1119,11 +1124,7 @@ export function stubForTarget(target) {
   if (target === "maker") {
     return ["loops.forever(function () {", "})"].join("\n");
   }
-  return [
-    "basic.onStart(function () {",
-    "    basic.showString(\"Hi\")",
-    "})"
-  ].join("\n");
+  return "basic.showString(\"Hi\")";
 }
 
 // Maps validator findings to concrete, positively-framed corrective actions so a
@@ -1136,6 +1137,7 @@ const VIOLATION_FIX_HINTS = [
   { match: /randint/i, hint: "use options._pickRandom() for random choices" },
   { match: /without initializer/i, hint: "give every let an initial value, e.g. let x = 0" },
   { match: /nested event|non-top-level/i, hint: "move event handlers and functions to the top level" },
+  { match: /basic\.onStart/i, hint: "write startup behaviour as top-level statements; they become the on start block" },
   { match: /enum member/i, hint: "use only valid enum members such as Button.A or IconNames.Heart" },
   { match: /arity/i, hint: "match each block's exact argument count" },
   { match: /Arcade APIs|micro:bit APIs|other target/i, hint: "use only APIs for the selected target" },

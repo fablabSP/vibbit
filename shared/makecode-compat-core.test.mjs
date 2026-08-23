@@ -9,6 +9,7 @@ import {
   buildSystemPrompt,
   parseModelOutput,
   runGenerationLoop,
+  runValidateBlocks,
   serializeTranscript,
   stubForTarget,
   validateBlocksCompatibility
@@ -36,10 +37,11 @@ test("system prompt grounds the model in target-specific APIs only", () => {
   assert.ok(buildSystemPrompt("microbit").includes("basic:"));
   assert.ok(buildSystemPrompt("arcade").includes("sprites:"));
   assert.ok(buildSystemPrompt("maker").includes("loops:"));
-  // micro:bit on start is a real block and must not be forbidden anymore
   const microbit = buildSystemPrompt("microbit");
-  assert.ok(microbit.includes("onStart(handler)"));
+  assert.ok(!microbit.includes("onStart(handler)"));
   assert.ok(!/onstart functions/i.test(microbit));
+  assert.match(microbit, /top-level statements/i);
+  assert.match(microbit, /on start block/i);
 });
 
 test("block-safe examples stay within each target's API surface", () => {
@@ -52,7 +54,8 @@ test("block-safe examples stay within each target's API surface", () => {
     return prompt.slice(start, end);
   };
   assert.ok(blockSafe(microbit).includes("input.onButtonPressed"));
-  assert.ok(blockSafe(microbit).includes("basic.onStart"));
+  assert.ok(!blockSafe(microbit).includes("basic.onStart"));
+  assert.ok(blockSafe(microbit).includes("top-level statements"));
   assert.ok(!blockSafe(microbit).includes("game.onUpdate"));
   assert.ok(blockSafe(arcade).includes("game.onUpdate"));
   assert.ok(!blockSafe(arcade).includes("input.onButtonPressed"));
@@ -104,7 +107,17 @@ test("fallback stub is block-safe for its target", () => {
   }
 });
 
-test("basic.onStart must be top-level on micro:bit", () => {
+test("basic.onStart is rejected even at the top level", () => {
+  const topLevel = [
+    "basic.onStart(function () {",
+    "    basic.showString(\"Hi\")",
+    "})"
+  ].join("\n");
+  const topLevelResult = validateBlocksCompatibility(topLevel, "microbit");
+  assert.equal(topLevelResult.ok, false);
+  assert.ok(topLevelResult.violations.includes("basic.onStart()"));
+  assert.ok(!topLevelResult.violations.includes("nested event registration"));
+
   const nested = [
     "input.onButtonPressed(Button.A, function () {",
     "    basic.onStart(function () {",
@@ -112,9 +125,26 @@ test("basic.onStart must be top-level on micro:bit", () => {
     "    })",
     "})"
   ].join("\n");
-  const result = validateBlocksCompatibility(nested, "microbit");
-  assert.equal(result.ok, false);
-  assert.ok(result.violations.includes("nested event registration"));
+  const nestedResult = validateBlocksCompatibility(nested, "microbit");
+  assert.equal(nestedResult.ok, false);
+  assert.ok(nestedResult.violations.includes("basic.onStart()"));
+  assert.ok(
+    !nestedResult.violations.includes("nested event registration"),
+    "onStart is not a nestable handler; the unwrap hint must be the only signal"
+  );
+
+  const bare = "onStart(function () { basic.showString(\"Hi\") })";
+  const bareResult = validateBlocksCompatibility(bare, "microbit");
+  assert.equal(bareResult.ok, false);
+  assert.ok(bareResult.violations.includes("basic.onStart()"));
+
+  const otherTarget = "game.onStart(function () { })";
+  const otherResult = validateBlocksCompatibility(otherTarget, "arcade");
+  assert.ok(!otherResult.violations.includes("basic.onStart()"));
+
+  const inString = "basic.showString(\"call basic.onStart( now\")";
+  const inStringResult = validateBlocksCompatibility(inString, "microbit");
+  assert.ok(!inStringResult.violations.includes("basic.onStart()"), inStringResult.violations.join(", "));
 });
 
 test("correction instruction turns violations into actionable fixes", () => {
@@ -124,6 +154,13 @@ test("correction instruction turns violations into actionable fixes", () => {
   assert.ok(message.includes("options._pickRandom()"));
   assert.ok(message.includes("Problems:"));
   assert.ok(message.includes("Fix by:"));
+});
+
+test("onStart correction tells the model to unwrap, not to hoist the wrapper", () => {
+  const message = buildCorrectionInstruction(["basic.onStart()"], "microbit");
+  assert.match(message, /top-level statements/i);
+  assert.match(message, /on start block/i);
+  assert.ok(!/move event handlers and functions to the top level/i.test(message));
 });
 
 test("strict correction instruction escalates and targets the right platform", () => {
@@ -142,6 +179,18 @@ test("correction instruction is safe with no violations", () => {
 
 const VALID_HEART = "basic.showIcon(IconNames.Heart)";
 const ARROW_UNSAFE = "input.onButtonPressed(Button.A, () => { basic.showIcon(IconNames.Heart) })";
+const DUCK_ONSTART = [
+  "basic.onStart(function () {",
+  "    basic.showIcon(IconNames.Duck)",
+  "    basic.pause(1000)",
+  "    basic.clearScreen()",
+  "})"
+].join("\n");
+const DUCK_TOPLEVEL = [
+  "basic.showIcon(IconNames.Duck)",
+  "basic.pause(1000)",
+  "basic.clearScreen()"
+].join("\n");
 
 function jsonOutput(code, feedback = ["ok"]) {
   return JSON.stringify({ feedback, code });
@@ -278,6 +327,41 @@ test("serializeTranscript keeps a single user turn and flattens later turns", ()
   assert.ok(flattened.user.includes("<<<USER>>>\nfirst"));
   assert.ok(flattened.user.includes("<<<ASSISTANT>>>\n" + ARROW_UNSAFE));
   assert.ok(flattened.user.includes("<<<FAILED_ATTEMPT>>>"));
+});
+
+test("duck fixture: basic.onStart fails the oracle and top-level statements pass", () => {
+  const wrapped = runValidateBlocks(DUCK_ONSTART, "microbit");
+  assert.equal(wrapped.ok, false);
+  assert.ok(wrapped.violations.includes("basic.onStart()"));
+
+  const topLevel = runValidateBlocks(DUCK_TOPLEVEL, "microbit");
+  assert.equal(topLevel.ok, true, topLevel.violations.join(", "));
+  assert.match(DUCK_TOPLEVEL, /basic\.showIcon\(IconNames\.Duck\)/);
+  assert.match(DUCK_TOPLEVEL, /basic\.pause\(1000\)/);
+  assert.match(DUCK_TOPLEVEL, /basic\.clearScreen\(\)/);
+});
+
+test("generation loop retries basic.onStart with the failed duck programme", async () => {
+  const calls = [];
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "Show the built-in duck icon, pause for one second, then clear the screen.",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async (messages) => {
+      calls.push(messages.slice());
+      if (calls.length === 1) return jsonOutput(DUCK_ONSTART, ["duck"]);
+      return jsonOutput(DUCK_TOPLEVEL, ["fixed"]);
+    }
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 2);
+  assert.equal(result.code, DUCK_TOPLEVEL);
+  assert.ok(calls[1][3].content.includes("<<<FAILED_ATTEMPT>>>"));
+  assert.ok(calls[1][3].content.includes(DUCK_ONSTART));
+  assert.match(calls[1][3].content, /top-level statements/i);
 });
 
 test("decompile fix request uses British spelling and names grey blocks", () => {
