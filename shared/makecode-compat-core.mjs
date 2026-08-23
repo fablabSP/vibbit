@@ -10,7 +10,12 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "buildSystemPrompt",
   "buildCorrectionInstruction",
   "stubForTarget",
-  "extractGeminiText"
+  "extractGeminiText",
+  "runValidateBlocks",
+  "buildFailedAttemptUserTurn",
+  "buildDecompileFixRequest",
+  "serializeTranscript",
+  "runGenerationLoop"
 ];
 
 export function sanitizeMakeCode(input) {
@@ -1189,4 +1194,195 @@ export function extractGeminiText(response) {
     return "";
   }
   return "";
+}
+
+export function runValidateBlocks(code, target) {
+  return validateBlocksCompatibility(code, target);
+}
+
+function transcriptTurn(role, content) {
+  return { role, content: content == null ? "" : String(content) };
+}
+
+export function buildFailedAttemptUserTurn({
+  code,
+  validation,
+  target,
+  kind,
+  strict = false
+} = {}) {
+  const failedProgramme = code == null ? "" : String(code);
+  const lines = [
+    "<<<FAILED_ATTEMPT>>>",
+    failedProgramme,
+    "<<<END_FAILED_ATTEMPT>>>"
+  ];
+  if (kind === "empty") {
+    lines.push("Your previous reply had empty code. Return a complete MakeCode programme as JSON only.");
+  } else {
+    const violations = validation && Array.isArray(validation.violations) ? validation.violations : [];
+    lines.push(buildCorrectionInstruction(violations, target, { strict: Boolean(strict) }));
+  }
+  lines.push("Return ONLY one compact JSON object: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript\"}. No prose.");
+  return lines.join("\n");
+}
+
+export function buildDecompileFixRequest({ greyBlocks, snippets, reason } = {}) {
+  const count = Math.max(0, Math.trunc(Number(greyBlocks) || 0));
+  const why = String(reason || "").trim();
+  const examples = (Array.isArray(snippets) ? snippets : [])
+    .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const parts = [
+    "Fix the current JavaScript so MakeCode decompiles it to native Blocks.",
+    "There must be no grey typescript_statement blocks.",
+    "Preserve intended behaviour."
+  ];
+  if (count) parts.push("Grey block count: " + count + ".");
+  if (why) parts.push("Reason: " + why);
+  if (examples.length) parts.push("Grey snippets: " + examples.join(" | "));
+  return parts.join(" ");
+}
+
+export function serializeTranscript(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const systemParts = [];
+  const rest = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const role = item.role;
+    const content = item.content == null ? "" : String(item.content);
+    if (role === "system") {
+      systemParts.push(content);
+      continue;
+    }
+    if (role === "user" || role === "assistant") {
+      rest.push({ role, content });
+    }
+  }
+  const system = systemParts.join("\n\n");
+  if (rest.length === 1 && rest[0].role === "user") {
+    return { system, user: rest[0].content };
+  }
+  const user = rest.map((turn) => {
+    const tag = turn.role === "assistant" ? "<<<ASSISTANT>>>" : "<<<USER>>>";
+    return tag + "\n" + turn.content;
+  }).join("\n");
+  return { system, user };
+}
+
+export async function runGenerationLoop({
+  target,
+  systemPrompt,
+  initialUserPrompt,
+  emptyRetries = 0,
+  validationRetries = 0,
+  maxAttempts = 1,
+  callModel
+} = {}) {
+  const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
+  let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
+  let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
+  let validationRetried = false;
+
+  const messages = [
+    transcriptTurn("system", systemPrompt),
+    transcriptTurn("user", initialUserPrompt)
+  ];
+  const attempts = [];
+  let last = null;
+
+  while (attempts.length < attemptLimit) {
+    const raw = await callModel(messages);
+    const parsed = parseModelOutput(raw);
+    const code = sanitizeMakeCode(parsed.code);
+    const validation = runValidateBlocks(code, target);
+    // Empty source can pass the static validator; treat it as empty, not ok.
+    const reason = !String(code || "").trim()
+      ? "empty"
+      : (validation.ok ? "ok" : "invalid");
+    last = {
+      raw: raw == null ? "" : String(raw),
+      code,
+      feedback: parsed.feedback,
+      validation,
+      reason
+    };
+    attempts.push(last);
+
+    if (reason === "ok") break;
+    if (attempts.length >= attemptLimit) break;
+
+    if (reason === "empty" && emptyLeft > 0) {
+      emptyLeft -= 1;
+      const assistantContent = String(raw || "").trim() || code || "(empty)";
+      messages.push(transcriptTurn("assistant", assistantContent));
+      messages.push(transcriptTurn("user", buildFailedAttemptUserTurn({
+        code,
+        validation,
+        target,
+        kind: "empty"
+      })));
+      continue;
+    }
+
+    if (reason === "invalid" && validationLeft > 0) {
+      validationLeft -= 1;
+      messages.push(transcriptTurn("assistant", code));
+      messages.push(transcriptTurn("user", buildFailedAttemptUserTurn({
+        code,
+        validation,
+        target,
+        kind: "invalid",
+        strict: validationRetried
+      })));
+      validationRetried = true;
+      continue;
+    }
+
+    break;
+  }
+
+  const lastValidation = last && last.validation
+    ? last.validation
+    : { ok: false, violations: [] };
+  const lastFeedback = last && Array.isArray(last.feedback) ? last.feedback : [];
+  const upstreamAttempts = attempts.length;
+
+  if (last && last.reason === "ok") {
+    return {
+      code: last.code,
+      feedback: normaliseFeedback(lastFeedback),
+      validation: lastValidation,
+      upstreamAttempts,
+      outcome: "ok",
+      attempts
+    };
+  }
+
+  if (!last || last.reason === "empty") {
+    return {
+      code: stubForTarget(target),
+      feedback: normaliseFeedback(
+        [...lastFeedback, "Model returned no code; provided fallback stub."]
+      ),
+      validation: lastValidation,
+      upstreamAttempts,
+      outcome: "stub-empty",
+      attempts
+    };
+  }
+
+  const violations = lastValidation.violations || [];
+  return {
+    code: stubForTarget(target),
+    feedback: normaliseFeedback(
+      [...lastFeedback, "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")]
+    ),
+    validation: lastValidation,
+    upstreamAttempts,
+    outcome: "stub-invalid",
+    attempts
+  };
 }

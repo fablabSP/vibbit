@@ -191,3 +191,31 @@ test("callManagedProvider uses OpenRouter GPT-5.6 Luna without temperature", asy
   assert.equal(capturedBody.model, "openai/gpt-5.6-luna");
   assert.equal(capturedBody.temperature, undefined);
 });
+
+test("callManagedProvider flattens a transcript for Gemini", async () => {
+  let capturedBody = null;
+  await callManagedProvider({
+    provider: "gemini",
+    apiKey: "gem-key",
+    model: "gemini-2.5-flash",
+    messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "() => {}" },
+      { role: "user", content: "<<<FAILED_ATTEMPT>>>\n() => {}" }
+    ],
+    fetchImpl: async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "ok" }] } }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+  const text = capturedBody.contents[0].parts[0].text;
+  assert.match(text, /<<<USER>>>/);
+  assert.match(text, /<<<ASSISTANT>>>/);
+  assert.match(text, /FAILED_ATTEMPT/);
+});

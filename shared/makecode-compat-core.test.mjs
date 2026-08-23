@@ -4,8 +4,12 @@ import test from "node:test";
 import {
   TARGET_API_CATALOG,
   buildCorrectionInstruction,
+  buildDecompileFixRequest,
+  buildFailedAttemptUserTurn,
   buildSystemPrompt,
   parseModelOutput,
+  runGenerationLoop,
+  serializeTranscript,
   stubForTarget,
   validateBlocksCompatibility
 } from "./makecode-compat-core.mjs";
@@ -134,4 +138,160 @@ test("correction instruction is safe with no violations", () => {
   assert.ok(message.includes("Maker"));
   assert.ok(!message.includes("Problems:"));
   assert.ok(message.length > 0);
+});
+
+const VALID_HEART = "basic.showIcon(IconNames.Heart)";
+const ARROW_UNSAFE = "input.onButtonPressed(Button.A, () => { basic.showIcon(IconNames.Heart) })";
+
+function jsonOutput(code, feedback = ["ok"]) {
+  return JSON.stringify({ feedback, code });
+}
+
+test("failed user turn includes the previous programme and JSON mandate", () => {
+  const turn = buildFailedAttemptUserTurn({
+    code: ARROW_UNSAFE,
+    validation: { ok: false, violations: ["arrow functions"] },
+    target: "microbit",
+    kind: "invalid"
+  });
+  assert.ok(turn.includes("<<<FAILED_ATTEMPT>>>"));
+  assert.ok(turn.includes("<<<END_FAILED_ATTEMPT>>>"));
+  assert.ok(turn.includes(ARROW_UNSAFE));
+  assert.ok(turn.includes("function () { }"));
+  assert.match(turn, /JSON only|compact JSON/i);
+
+  const emptyTurn = buildFailedAttemptUserTurn({
+    code: "",
+    validation: { ok: false, violations: [] },
+    target: "microbit",
+    kind: "empty"
+  });
+  assert.ok(emptyTurn.includes("<<<FAILED_ATTEMPT>>>\n\n<<<END_FAILED_ATTEMPT>>>"));
+  assert.match(emptyTurn, /empty/i);
+  assert.match(emptyTurn, /JSON only|compact JSON/i);
+});
+
+test("generation loop retries empty output and keeps the failed turn", async () => {
+  const calls = [];
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async (messages) => {
+      calls.push(messages.slice());
+      if (calls.length === 1) return jsonOutput("", ["empty"]);
+      return jsonOutput(VALID_HEART, ["heart"]);
+    }
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 2);
+  assert.equal(result.code, VALID_HEART);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].map((item) => item.role), ["system", "user"]);
+  assert.equal(calls[1][2].role, "assistant");
+  assert.equal(calls[1][3].role, "user");
+  assert.ok(calls[1][3].content.includes("<<<FAILED_ATTEMPT>>>"));
+  assert.match(calls[1][3].content, /empty/i);
+});
+
+test("generation loop retries invalid output and the next user turn includes FAILED_ATTEMPT", async () => {
+  const calls = [];
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async (messages) => {
+      calls.push(messages.slice());
+      if (calls.length === 1) return jsonOutput(ARROW_UNSAFE, ["arrow"]);
+      return jsonOutput(VALID_HEART, ["fixed"]);
+    }
+  });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.upstreamAttempts, 2);
+  assert.equal(result.code, VALID_HEART);
+  assert.equal(result.validation.ok, true);
+  assert.equal(calls.length, 2);
+  const second = calls[1];
+  assert.equal(second[0].role, "system");
+  assert.equal(second[1].role, "user");
+  assert.equal(second[2].role, "assistant");
+  assert.equal(second[2].content, ARROW_UNSAFE);
+  assert.ok(second[3].content.includes("<<<FAILED_ATTEMPT>>>"));
+  assert.ok(second[3].content.includes(ARROW_UNSAFE));
+  assert.ok(second[3].content.includes("arrow functions"));
+});
+
+test("generation loop stubs empty and invalid outcomes", async () => {
+  const empty = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async () => jsonOutput("")
+  });
+  assert.equal(empty.outcome, "stub-empty");
+  assert.equal(empty.code, stubForTarget("microbit"));
+  assert.equal(empty.upstreamAttempts, 3);
+  assert.equal(empty.attempts[empty.attempts.length - 1].reason, "empty");
+  assert.ok(empty.feedback.some((line) => /no code/i.test(line)));
+
+  const invalid = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    emptyRetries: 2,
+    validationRetries: 2,
+    maxAttempts: 3,
+    callModel: async () => jsonOutput(ARROW_UNSAFE)
+  });
+  assert.equal(invalid.outcome, "stub-invalid");
+  assert.equal(invalid.code, stubForTarget("microbit"));
+  assert.equal(invalid.upstreamAttempts, 3);
+  assert.equal(invalid.validation.ok, false);
+  assert.ok(invalid.feedback.some((line) => /Validation fallback/i.test(line)));
+});
+
+test("serializeTranscript keeps a single user turn and flattens later turns", () => {
+  const single = serializeTranscript([
+    { role: "system", content: "sys-a" },
+    { role: "system", content: "sys-b" },
+    { role: "user", content: "please show a heart" }
+  ]);
+  assert.equal(single.system, "sys-a\n\nsys-b");
+  assert.equal(single.user, "please show a heart");
+
+  const flattened = serializeTranscript([
+    { role: "system", content: "sys" },
+    { role: "user", content: "first" },
+    { role: "assistant", content: ARROW_UNSAFE },
+    { role: "user", content: "<<<FAILED_ATTEMPT>>>\n" + ARROW_UNSAFE }
+  ]);
+  assert.equal(flattened.system, "sys");
+  assert.ok(flattened.user.includes("<<<USER>>>\nfirst"));
+  assert.ok(flattened.user.includes("<<<ASSISTANT>>>\n" + ARROW_UNSAFE));
+  assert.ok(flattened.user.includes("<<<FAILED_ATTEMPT>>>"));
+});
+
+test("decompile fix request uses British spelling and names grey blocks", () => {
+  const text = buildDecompileFixRequest({
+    greyBlocks: 2,
+    snippets: ["foo()", "bar()", "baz()", "dropped"],
+    reason: "Detected 2 grey JavaScript block(s)"
+  });
+  assert.ok(text.includes("behaviour"));
+  assert.ok(text.includes("typescript_statement"));
+  assert.ok(text.includes("Grey block count: 2."));
+  assert.ok(text.includes("Detected 2 grey JavaScript block(s)"));
+  assert.ok(text.includes("foo()"));
+  assert.ok(text.includes("bar()"));
+  assert.ok(text.includes("baz()"));
+  assert.ok(!text.includes("dropped"));
 });
