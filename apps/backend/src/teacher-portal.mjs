@@ -442,7 +442,7 @@ function renderCredentialProfileOptions({
 function formatUsageLine(usage, dailyLimit) {
   const used = Number(usage && usage.acceptedGenerations) || 0;
   const limit = Math.max(1, Number(dailyLimit) || 500);
-  return `${used} of ${limit} used today`;
+  return `${used} of ${limit} used today (hidden retries included)`;
 }
 
 function withTimeout(promise, timeoutMs) {

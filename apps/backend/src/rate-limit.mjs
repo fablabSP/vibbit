@@ -174,6 +174,8 @@ export function createRateLimitController(envInput = {}, {
     },
 
     async reserveGenerate({ sessionToken = "", classroomId = "" } = {}) {
+      // One reservation covers the whole student generate, including hidden
+      // provider retries. Meter those retries on usage.upstreamAttempts, not quota.
       // Canonical session id only — never trust raw request headers for bucket keys.
       const canonicalSession = String(sessionToken || "").trim();
       const sessionKey = `generate:session:${canonicalSession || "anonymous"}`;

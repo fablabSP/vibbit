@@ -530,3 +530,109 @@ test("revoked classroom session does not consume daily generate quota", async ()
   assert.equal(generate.status, 401);
   assert.equal(rateLimits.getClassroomDayUsage("cls_rate_a"), 0);
 });
+
+test("hidden provider retries do not spend extra daily quota", async () => {
+  const runtime = createRateLimitRuntime({
+    env: {
+      VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "1",
+      VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
+      VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
+    }
+  });
+
+  const connect = await connectWithCode(runtime, "RATEA");
+  assert.equal(connect.status, 200);
+  const { sessionToken } = await connect.json();
+
+  let upstreamCalls = 0;
+  const restoreFetch = mockUpstreamFetch(async () => {
+    upstreamCalls += 1;
+    if (upstreamCalls === 1) {
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              feedback: ["arrow"],
+              code: "input.onButtonPressed(Button.A, () => { basic.showIcon(IconNames.Heart) })"
+            })
+          }
+        }]
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return mockGenerateResponse();
+  });
+
+  try {
+    const first = await generateWithSession(runtime, sessionToken);
+    const firstBody = await first.json();
+    assert.equal(first.status, 200, firstBody && firstBody.error ? firstBody.error : "generate failed");
+    assert.equal(firstBody.upstreamAttempts, 2);
+    const usage = runtime.usageStore.getToday("cls_rate_a");
+    assert.equal(usage.acceptedGenerations, 1);
+    assert.equal(usage.upstreamAttempts, 2);
+
+    const second = await generateWithSession(runtime, sessionToken);
+    assert.equal(second.status, 429);
+    const limited = await second.json();
+    assert.equal(limited.reason, "generate_daily_quota");
+    assert.equal(upstreamCalls, 2);
+    assert.equal(runtime.usageStore.getToday("cls_rate_a").acceptedGenerations, 1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("hidden provider retries stay capped at three upstream attempts", async () => {
+  const runtime = createRateLimitRuntime({
+    env: {
+      VIBBIT_EMPTY_RETRIES: "5",
+      VIBBIT_VALIDATION_RETRIES: "5",
+      VIBBIT_RATE_GENERATE_PER_SESSION_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_MIN: "100",
+      VIBBIT_RATE_GENERATE_PER_CLASSROOM_PER_DAY: "10",
+      VIBBIT_RATE_CONCURRENT_PER_CLASSROOM: "10",
+      VIBBIT_RATE_CONCURRENT_GLOBAL: "100"
+    }
+  });
+
+  const connect = await connectWithCode(runtime, "RATEA");
+  assert.equal(connect.status, 200);
+  const { sessionToken } = await connect.json();
+
+  let upstreamCalls = 0;
+  const restoreFetch = mockUpstreamFetch(async () => {
+    upstreamCalls += 1;
+    return new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            feedback: ["arrow"],
+            code: "input.onButtonPressed(Button.A, () => { basic.showIcon(IconNames.Heart) })"
+          })
+        }
+      }]
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  });
+
+  try {
+    const response = await generateWithSession(runtime, sessionToken);
+    const body = await response.json();
+    assert.equal(response.status, 200, body && body.error ? body.error : "generate failed");
+    assert.equal(body.outcome, "stub-invalid");
+    assert.equal(body.upstreamAttempts, 3);
+    assert.equal(upstreamCalls, 3);
+    const usage = runtime.usageStore.getToday("cls_rate_a");
+    assert.equal(usage.acceptedGenerations, 1);
+    assert.equal(usage.upstreamAttempts, 3);
+  } finally {
+    restoreFetch();
+  }
+});

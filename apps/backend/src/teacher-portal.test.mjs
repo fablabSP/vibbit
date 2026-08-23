@@ -89,7 +89,7 @@ test("teacher can sign in locally, test-and-save an AI account, create a classro
   assert.match(html, /AI accounts/);
   assert.match(html, /School OpenAI/);
   assert.match(html, /Period 3/);
-  assert.match(html, /of 500 used today/);
+  assert.match(html, /of 500 used today \(hidden retries included\)/);
   assert.match(html, /Ready/);
   const codeMatch = html.match(/class="code code-lg">([A-Z]{5}-[A-Z]{5})</);
   assert.ok(codeMatch, "expected classroom code in dashboard");

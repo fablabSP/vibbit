@@ -41,6 +41,7 @@ const MAX_RECENT_CHAT_TURNS = 4;
 const MAX_RECENT_CHAT_CHARS = 400;
 const MAX_ORACLE_MISS_REASON_CHARS = 220;
 const MAX_ORACLE_MISS_GREY_BLOCKS = 32;
+// Hidden retries stay inside one reservation. Keep this cap until quota accounting changes.
 const MAX_UPSTREAM_ATTEMPTS = 3;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 10;
