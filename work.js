@@ -59,7 +59,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", default: true }
     ],
     gemini: [
-      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", default: true },
+      // freeRpd/freeRpm are Google's FREE-TIER limits, shown in the picker so the
+      // trade-off is visible at the point of choosing. Lite models get roughly
+      // 25x the daily allowance of the standard Flash models, which is the
+      // difference between a workshop that runs and one that stops after ten
+      // prompts. Check your own figures at aistudio.google.com -- Google revises
+      // these without notice, and a paid tier lifts them entirely.
+      { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite", default: true, freeRpd: 500, freeRpm: 15 },
+      { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite", freeRpd: 500, freeRpm: 15 },
+      { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", freeRpd: 20, freeRpm: 5 },
+      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", freeRpd: 20, freeRpm: 5 },
       { id: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
       { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" }
     ],
@@ -465,7 +474,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const openPanel = function () {
     try { startEditorPolling(); } catch (error) {}
-    try { renderUsage(); } catch (error) {}
+    try { syncBudgetToModel(); renderUsage(); } catch (error) {}
     if (!ensureRuntimeMounted()) return;
     fab.style.display = "none";
     previewBar.style.display = "none";
@@ -593,7 +602,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     presets.forEach((preset) => {
       const opt = document.createElement("option");
       opt.value = preset.id;
-      opt.textContent = preset.label;
+      opt.textContent = preset.freeRpd
+        ? preset.label + "  \u2014 free: " + preset.freeRpd + "/day, " + preset.freeRpm + "/min"
+        : preset.label;
       selectEl.appendChild(opt);
       if (preset.default) defaultId = preset.id;
     });
@@ -667,6 +678,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const applySettingsMode = () => {
+    try { syncBudgetToModel(); } catch (error) {}
     const mode = coerceMode(setMode.value);
     if (setMode.value !== mode) setMode.value = mode;
     setModeVisibility(mode, settingsModeRefs);
@@ -4396,7 +4408,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
      instead of the class discovering it as a wall of errors mid-lesson.
      DAILY_REQUEST_BUDGET is a display target, not an enforced limit -- the real
      limit lives at the provider. Set to 0 to hide the counter entirely. */
-  let DAILY_REQUEST_BUDGET = 200;
+  // Overwritten from the selected model's free-tier RPD, so the counter reflects
+  // the real limit instead of a number we made up. Set to 0 to hide the counter.
+  let DAILY_REQUEST_BUDGET = 500;
+
+  const syncBudgetToModel = () => {
+    try {
+      const provider = storageGet(STORAGE_PROVIDER) || "openai";
+      const model = storageGet(STORAGE_MODEL) || "";
+      const preset = (MODEL_PRESETS[provider] || []).find((entry) => entry.id === model);
+      if (preset && preset.freeRpd) DAILY_REQUEST_BUDGET = preset.freeRpd;
+    } catch (error) {
+    }
+  };
   const STORAGE_USAGE = "vibbit_daily_usage";
 
   const todayKey = () => new Date().toISOString().slice(0, 10);
@@ -4447,9 +4471,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const spent = usage.prompts > 0
       ? " So far " + usage.prompts + " prompt(s) have used " + usage.requests + " request(s)."
       : "";
+    const liteHint = DAILY_REQUEST_BUDGET <= 20
+      ? " This model only allows " + DAILY_REQUEST_BUDGET + " requests a day on the free tier \u2014 switching to a Flash Lite model in Settings gives you far more."
+      : "";
     const headline = left === 0
-      ? "<strong>Daily request budget used up.</strong> The AI service may start refusing requests."
-      : "<strong>Only " + left + " request(s) left today.</strong> Time to be economical." + spent;
+      ? "<strong>Daily request budget used up.</strong> The AI service may start refusing requests." + liteHint
+      : "<strong>Only " + left + " request(s) left today.</strong> Time to be economical." + spent + liteHint;
 
     el.innerHTML = headline
       + '<ul style="margin:7px 0 0;padding-left:18px">'
@@ -4469,9 +4496,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const left = Math.max(0, DAILY_REQUEST_BUDGET - usage.requests);
     const ratio = usage.requests / DAILY_REQUEST_BUDGET;
     el.style.display = "";
-    el.textContent = left + " left today";
-    el.title = usage.prompts + " prompt(s) today used " + usage.requests
-      + " AI request(s). Retries cost extra requests. This is a guide, not the provider's real limit.";
+    el.textContent = usage.requests + " / " + DAILY_REQUEST_BUDGET + " today";
+    el.title = usage.prompts + " prompt(s) today used " + usage.requests + " AI request(s), against a "
+      + DAILY_REQUEST_BUDGET + "/day free-tier limit. Retries each cost a request. Counted in THIS browser only -- "
+      + "if others share this key, the real total is higher. Check aistudio.google.com for the authoritative figure.";
     el.style.color = ratio >= 1 ? "#f85149" : (ratio > 0.8 ? "#d29922" : "#4a5f82");
     renderQuotaBanner();
   };
