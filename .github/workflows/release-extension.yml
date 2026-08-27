@@ -25,7 +25,7 @@ jobs:
         run: npm ci
 
       - name: Build and package extension
-        run: npm run package
+        run: npm run package:neutral
 
       - name: Prepare release assets
         id: assets
