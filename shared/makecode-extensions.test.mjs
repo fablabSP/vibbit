@@ -5,6 +5,7 @@ import {
   MICROBIT_EXTENSIONS,
   buildExtensionPromptExtras,
   buildSystemPrompt,
+  detectMissingCapability,
   detectRequiredExtensions,
   extensionDependencies,
   parseModelOutput,
@@ -202,4 +203,49 @@ test("truncation triggers a retry with a larger token budget", async () => {
   });
   assert.deepEqual(scales, [1, 3], "second attempt must ask for more room");
   assert.equal(result.outcome ?? "ok", "ok");
+});
+
+/* ── capability safety net ────────────────────────────────── */
+
+test("the exact blehid request is detected from its intent", () => {
+  const request = "I want to use the Bluetooth HID keyboard extension, when I shake the micro:bit, "
+    + "show a random number from 1 to 6, then send that number as a keypress through the bluetooth.";
+  assert.deepEqual(detectRequiredExtensions("", request), ["blehid"]);
+  assert.match(buildExtensionPromptExtras("microbit", request).join("\n"), /keyboard\.sendString/);
+});
+
+test("looser phrasings still reach the right extension", () => {
+  assert.deepEqual(detectRequiredExtensions("", "type on my laptop wirelessly"), ["blehid"]);
+  assert.deepEqual(detectRequiredExtensions("", "measure distance to the wall"), ["sonar"]);
+  assert.deepEqual(detectRequiredExtensions("", "make the rainbow lights glow"), ["neopixel"]);
+});
+
+test("a missing-capability admission is recognised, ordinary feedback is not", () => {
+  assert.equal(detectMissingCapability(["Used Serial since the Bluetooth HID extension isn't in my current toolkit."]), true);
+  assert.equal(detectMissingCapability(["I don't have access to that block."]), true);
+  assert.equal(detectMissingCapability(["Shake to roll the dice."]), false);
+  assert.equal(detectMissingCapability([]), false);
+});
+
+test("a missing-capability report retries with the full extension catalogue", async () => {
+  let calls = 0;
+  let retrySawKeyboardApi = false;
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "bluetooth keyboard dice",
+    maxAttempts: 3,
+    capabilityRetries: 1,
+    callModel: async (messages) => {
+      calls += 1;
+      if (calls === 1) {
+        return JSON.stringify({ feedback: ["Used Serial since the Bluetooth HID extension isn't in my toolkit."], code: "serial.writeNumber(1)" });
+      }
+      retrySawKeyboardApi = messages[0].content.includes("keyboard.startKeyboardService");
+      return JSON.stringify({ feedback: ["Sends a keypress."], code: "keyboard.startKeyboardService()" });
+    }
+  });
+  assert.equal(calls, 2);
+  assert.equal(retrySawKeyboardApi, true, "retry must carry the extension APIs");
+  assert.match(result.code, /keyboard\.startKeyboardService/);
 });

@@ -279,6 +279,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '    </svg>'
     + '  </span>'
     + '  <span id="vibbit-version" style="margin-left:8px;color:#4a5f82;font-size:10px;font-weight:500;letter-spacing:.02em">v' + VIBBIT_VERSION + '</span>'
+    + '  <span id="vibbit-usage" title="Daily AI request usage" style="margin-left:8px;color:#4a5f82;font-size:10px;font-weight:500"></span>'
     + '  <span id="status" style="display:none">Idle</span>'
     + '  <button id="editor-pill" type="button" title="MakeCode editor connection" style="margin-left:10px;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid #29324e;background:#0b1020;color:#8899bb;font-size:11px;font-weight:500;cursor:pointer;font-family:inherit">'
     + '    <span id="editor-dot" style="width:7px;height:7px;border-radius:50%;background:#5a6d8f;flex-shrink:0"></span>'
@@ -290,6 +291,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* chat messages area */
     + '<div id="chat-messages" style="flex:1;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;padding:20px 18px"></div>'
+
+    /* missing-extension banner */
+    + '<div id="ext-banner" style="display:none;flex-shrink:0;margin:0 16px 10px;padding:10px 12px;border-radius:10px;border:1px solid #3d2f16;background:#1c1608;color:#e3c07b;font-size:12px;line-height:1.5"></div>'
 
     /* input area */
     + '<div style="flex-shrink:0;border-top:1px solid #1f2b47;padding:12px 16px;background:#0d1528">'
@@ -458,6 +462,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const openPanel = function () {
     try { startEditorPolling(); } catch (error) {}
+    try { renderUsage(); } catch (error) {}
     if (!ensureRuntimeMounted()) return;
     fab.style.display = "none";
     previewBar.style.display = "none";
@@ -751,6 +756,125 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     refreshEditorState();
   };
 
+  /* ── installed-extension detection ─────────────────────────
+     Generated code that calls neopixel.* cannot compile unless the package is a
+     project dependency. The model is told to mention this, but relying on it
+     remembering is not good enough for a classroom: the symptom is red squiggles
+     and a program that never runs.
+
+     MakeCode does not expose a clean "what is installed" API to a content
+     script, so we probe several surfaces and combine them. When nothing is
+     conclusive we say so rather than guessing -- a false "you are missing this"
+     is worse than no banner at all. */
+  const extensionInstallProbes = (entry) => {
+    const label = String(entry.label || "").toLowerCase();
+    const namespaces = (entry.apis || [])
+      .map((api) => String(api).split(/[.\s(]/)[0].trim())
+      .filter(Boolean);
+
+    // Probe 1: MakeCode loads each dependency's typings into a Monaco model.
+    // Finding "namespace neopixel" in any model is strong evidence.
+    try {
+      for (const ctx of monacoCandidateWindows()) {
+        const monaco = ctx.monaco;
+        if (!monaco || !monaco.editor || !monaco.editor.getModels) continue;
+        for (const model of monaco.editor.getModels()) {
+          const uri = String((model.uri && model.uri.path) || "");
+          if (!/\.d\.ts$/.test(uri)) continue;
+          const text = model.getValue();
+          if (namespaces.some((ns) => new RegExp("namespace\\s+" + ns + "\\b").test(text))) {
+            return true;
+          }
+        }
+      }
+    } catch (error) {
+    }
+
+    // Probe 2: installed extensions appear as toolbox categories.
+    try {
+      for (const ctx of monacoCandidateWindows()) {
+        const doc = ctx.document;
+        if (!doc || !doc.querySelectorAll) continue;
+        const nodes = [...doc.querySelectorAll(".blocklyTreeLabel, .blocklyTreeRow, [class*='toolbox'] [class*='label']")];
+        for (const node of nodes) {
+          const text = String(node.innerText || node.textContent || "").trim().toLowerCase();
+          if (!text) continue;
+          if (namespaces.some((ns) => text === ns.toLowerCase())) return true;
+          if (label && text === label) return true;
+        }
+      }
+    } catch (error) {
+    }
+
+    return false;
+  };
+
+  // Returns { conclusive, missing: [entry] }. conclusive is false when we could
+  // not read the project at all, in which case the banner stays advisory.
+  const checkExtensionsFor = (text, code) => {
+    const result = { conclusive: false, missing: [], needed: [] };
+    try {
+      const ids = detectRequiredExtensions(code || "", text || "", "microbit");
+      if (!ids.length) return result;
+      result.needed = ids.map((id) => MICROBIT_EXTENSIONS[id]).filter(Boolean);
+      result.conclusive = Boolean(probeMonacoCtx());
+      if (!result.conclusive) return result;
+      result.missing = result.needed.filter((entry) => !extensionInstallProbes(entry));
+    } catch (error) {
+    }
+    return result;
+  };
+
+  const extBanner = () => document.getElementById("ext-banner");
+
+  const renderExtensionBanner = (text, code) => {
+    const el = extBanner();
+    if (!el) return;
+    const check = checkExtensionsFor(text, code);
+    if (!check.needed.length) { el.style.display = "none"; return; }
+
+    const names = (list) => list.map((entry) => entry.label).join(" and ");
+
+    if (!check.conclusive) {
+      el.innerHTML = '<strong>Before you send:</strong> this needs the '
+        + escapeHTML(names(check.needed))
+        + ' extension. Add it in MakeCode first: gear icon \u2192 Extensions \u2192 search for it.';
+      el.style.display = "";
+      return;
+    }
+
+    if (!check.missing.length) {
+      el.style.display = "none";
+      return;
+    }
+
+    const pairingNote = check.missing.some((entry) => entry.id === "blehid")
+      ? '<br>Bluetooth HID also needs <strong>Project Settings \u2192 No Pairing Required</strong>, and a micro:bit V2.'
+      : "";
+    el.innerHTML = '<strong>Add this extension first:</strong> '
+      + escapeHTML(names(check.missing))
+      + '. In MakeCode click the gear icon \u2192 Extensions \u2192 search for '
+      + escapeHTML(check.missing.map((entry) => entry.pkg.replace(/^github:/, "").split("#")[0]).join(", "))
+      + '. Without it the generated code will not run.'
+      + pairingNote
+      + ' <button type="button" id="ext-recheck" style="margin-left:6px;padding:3px 9px;border-radius:7px;border:1px solid #4a3a1c;background:transparent;color:#e3c07b;font-size:11px;cursor:pointer;font-family:inherit">Re-check</button>';
+    el.style.display = "";
+  };
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!target || !target.id || target.id !== "ext-recheck") return;
+    renderExtensionBanner(promptEl.value, "");
+  });
+
+  let extBannerTimer = null;
+  const scheduleExtensionBannerRefresh = () => {
+    if (extBannerTimer) clearTimeout(extBannerTimer);
+    extBannerTimer = setTimeout(() => {
+      try { renderExtensionBanner(promptEl.value, ""); } catch (error) {}
+    }, 350);
+  };
+
   const setStatus = (value) => {
     const next = value || "";
     statusEl.textContent = next;
@@ -1011,9 +1135,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     promptEl.value = item.prompt;
     promptEl.focus();
     promptEl.dispatchEvent(new Event("input", { bubbles: true }));
-    if (item.needs && item.needs !== "servo") {
-      setActivity("Add the " + item.needs + " extension in MakeCode before running this one.");
-    }
+    scheduleExtensionBannerRefresh();
   });
 
   const scrollChatToBottom = () => {
@@ -1361,6 +1483,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   /* auto-resize textarea */
   promptEl.addEventListener("input", () => {
+    scheduleExtensionBannerRefresh();
     promptEl.style.height = "auto";
     promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + "px";
   });
@@ -2247,6 +2370,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     detectRequiredExtensions,
     extensionDependencies,
     buildExtensionPromptExtras,
+    buildAllExtensionPromptExtras,
+    detectMissingCapability,
     buildSystemPrompt,
     buildCorrectionInstruction,
     stubForTarget,
@@ -3136,7 +3261,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         // Detects use in generated code.
         detect: /\bneopixel\s*\./,
         // Detects intent in a natural-language request (prompt injection trigger).
-        intent: /\b(neo\s?pixel|ws2812|led strip|light strip|addressable led|rgb strip)\b/i,
+        intent: /\b(neo\s?pixel|ws2812|led strip|light strip|addressable led|rgb strip|strip of leds|colou?red lights|rainbow lights)\b/i,
         apis: [
           "neopixel.create(DigitalPin, numLeds, NeoPixelMode) -> Strip",
           "strip.show(), strip.clear(), strip.setBrightness(0-255), strip.rotate(offset)",
@@ -3173,7 +3298,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         pkg: "sonar",
         docs: "https://makecode.microbit.org/pkg/microsoft/pxt-sonar",
         detect: /\bsonar\s*\./,
-        intent: /\b(sonar|ultrasonic|hc-?sr04|distance sensor|range finder|rangefinder)\b/i,
+        intent: /\b(sonar|ultrasonic|hc-?sr04|distance sensor|range ?finder|measure distance|how far|proximity)\b/i,
         apis: [
           "sonar.ping(trig: DigitalPin, echo: DigitalPin, unit: PingUnit) -> number",
           "sonar.ping(trig, echo, unit, maxCmDistance) -> number"
@@ -3204,7 +3329,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         pkg: "github:bsiever/microbit-pxt-blehid#v0.3.4",
         docs: "https://makecode.microbit.org/pkg/bsiever/microbit-pxt-blehid",
         detect: /\b(keyboard|mouse|media|absmouse)\s*\./,
-        intent: /\b(ble ?hid|bluetooth keyboard|bluetooth mouse|hid|act as a keyboard|control my computer|keypress|send keystrokes)\b/i,
+        intent: /\b(ble ?hid|hid|bluetooth|keypress|key ?stroke|act as a (?:keyboard|mouse)|control (?:my |the )?(?:computer|laptop|pc)|type on (?:my |the )?(?:computer|laptop|pc)|wireless (?:keyboard|mouse)|send (?:it |them |the .{0,20})?to (?:my |the )?(?:computer|laptop|pc))\b/i,
         apis: [
           "keyboard.startKeyboardService(), keyboard.sendString(text), keyboard.sendSimultaneousKeys(keys, isDown)",
           "mouse.startMouseService(), mouse.movePointer(dx, dy), mouse.setButton(MouseButton, isDown)",
@@ -3287,6 +3412,31 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     // Returns the extension ids a piece of code (and/or a request) needs.
     // `code` is authoritative; `request` only adds intent-based hints so the system
     // prompt can be primed before any code exists.
+    // Regexes will always have holes. When the model itself reports that something
+    // is unavailable, that admission is a more reliable signal than any pattern we
+    // can write -- so treat it as a failure and retry with every extension loaded.
+    const MISSING_CAPABILITY_PATTERNS = [
+      /\b(?:isn't|is not|aren't|are not|not) (?:in|part of|available in|included in) (?:my|the|your) (?:current )?(?:toolkit|toolset|tools|library|libraries|blocks|extensions?)\b/i,
+      /\bdon't have (?:access to|the)\b/i,
+      /\b(?:no|without) (?:access to|support for) (?:the )?\w+ extension\b/i,
+      /\bextension (?:isn't|is not|was not|wasn't) (?:available|installed|loaded)\b/i,
+      /\b(?:used|using|switched to|fell back to|instead) .{0,40}\b(?:since|because) .{0,40}\b(?:isn't|is not|not) (?:available|in)\b/i
+    ];
+
+    function detectMissingCapability(feedback) {
+      const text = (Array.isArray(feedback) ? feedback.join(" ") : String(feedback || ""));
+      if (!text.trim()) return false;
+      return MISSING_CAPABILITY_PATTERNS.some((pattern) => pattern.test(text));
+    }
+
+    // Every extension's grounding at once. Used only for the retry after a missing
+    // capability report, where correctness beats keeping the prompt lean.
+    function buildAllExtensionPromptExtras(target) {
+      if (target !== "microbit") return [];
+      const ids = Object.keys(MICROBIT_EXTENSIONS);
+      return buildExtensionPromptExtrasForIds(ids);
+    }
+
     function detectRequiredExtensions(code, request = "", target = "microbit") {
       if (target !== "microbit") return [];
       const codeView = stripNonCodeSegments(String(code || ""));
@@ -3312,9 +3462,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     // Prompt grounding for the detected extensions only. Injecting all of them on
     // every request wastes context and biases the model towards reaching for a
     // strip when led.plot would do.
-    function buildExtensionPromptExtras(target, requestHint = "", code = "") {
-      if (target !== "microbit") return [];
-      const ids = detectRequiredExtensions(code, requestHint, target);
+    function buildExtensionPromptExtrasForIds(ids) {
       const lines = [];
       for (const id of ids) {
         const entry = MICROBIT_EXTENSIONS[id];
@@ -3328,6 +3476,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         lines.push(...entry.rules.map((rule) => "- " + rule));
         lines.push("Worked example:", entry.example);
       }
+      return lines;
+    }
+
+    function buildExtensionPromptExtras(target, requestHint = "", code = "") {
+      if (target !== "microbit") return [];
+      const ids = detectRequiredExtensions(code, requestHint, target);
+      const lines = buildExtensionPromptExtrasForIds(ids);
       if (SERVO_INTENT.test(String(requestHint || "")) || /pins\.servo/.test(String(code || ""))) {
         lines.push("", "SERVO (built into micro:bit, no extension needed):");
         lines.push(...SERVO_RULES.map((rule) => "- " + rule));
@@ -3895,6 +4050,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       emptyRetries = 0,
       validationRetries = 0,
       truncationRetries = 1,
+      capabilityRetries = 1,
       maxAttempts = 1,
       callModel,
       runDecompile
@@ -3904,6 +4060,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       let truncationLeft = Math.max(0, Math.trunc(Number(truncationRetries) || 0));
       // Escalating budget: a reply cut off mid-JSON needs more room, not a reword.
       let tokenScale = 1;
+      let capabilityLeft = Math.max(0, Math.trunc(Number(capabilityRetries) || 0));
+      // Set once the model has reported a missing capability, so the retry gets the
+      // full extension catalogue appended to its system turn.
+      let capabilityBoost = "";
       let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
       let validationRetried = false;
 
@@ -3915,6 +4075,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       let last = null;
 
       while (attempts.length < attemptLimit) {
+        if (capabilityBoost && messages[0] && messages[0].role === "system") {
+          messages[0] = transcriptTurn("system", messages[0].content + "\n" + capabilityBoost);
+          capabilityBoost = "";
+        }
         const raw = await callModel(messages, { tokenScale });
         const parsed = parseModelOutput(raw);
         const code = sanitizeMakeCode(parsed.code);
@@ -3927,6 +4091,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         // being missing its final braces. Treat truncation as its own failure so we
         // retry with a bigger budget rather than pasting a half program.
         if (parsed.truncated && reason !== "invalid") reason = "truncated";
+        // The model saying "that extension isn't in my toolkit" means our detection
+        // missed. Retry with every extension loaded rather than shipping a fallback.
+        if (reason === "ok" && capabilityLeft > 0 && detectMissingCapability(parsed.feedback)) {
+          reason = "capability";
+        }
         let decompile = null;
         if (reason === "ok" && typeof runDecompile === "function") {
           try {
@@ -3950,6 +4119,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
         if (reason === "ok") break;
         if (attempts.length >= attemptLimit) break;
+
+        if (reason === "capability" && capabilityLeft > 0) {
+          capabilityLeft -= 1;
+          const extras = buildAllExtensionPromptExtras(target);
+          capabilityBoost = extras.length
+            ? "\nTHE FOLLOWING EXTENSIONS ARE AVAILABLE. Use them when asked. Tell the student to add the extension in MakeCode.\n" + extras.join("\n")
+            : "";
+          if (!capabilityBoost) break;
+          continue;
+        }
 
         if (reason === "truncated" && truncationLeft > 0) {
           truncationLeft -= 1;
@@ -4073,6 +4252,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       detectRequiredExtensions,
       extensionDependencies,
       buildExtensionPromptExtras,
+      buildAllExtensionPromptExtras,
+      detectMissingCapability,
       buildSystemPrompt,
       buildCorrectionInstruction,
       stubForTarget,
@@ -4085,6 +4266,117 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     };
   })();
   // END_SHARED_COMPAT_CORE
+
+  /* ── transient upstream failures ───────────────────────────
+     Providers fail in two very different ways. 429 means "you asked too often";
+     503 means "we are full right now" and is common on free tiers and preview
+     models, especially when a whole class sends at once. Both clear on their
+     own, so they must be retried rather than shown to a student as raw JSON. */
+  const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+  const httpError = (response, text) => {
+    const error = new Error(text || ("HTTP " + response.status));
+    error.status = response.status;
+    error.transient = TRANSIENT_STATUSES.has(response.status);
+    return error;
+  };
+
+  const friendlyProviderError = (error) => {
+    const status = error && error.status;
+    if (status === 429) return "The AI service is rate limited right now. Waiting a moment, then trying again.";
+    if (status === 503 || status === 502 || status === 504) return "The AI service is busy right now. Trying again in a few seconds.";
+    if (status === 401 || status === 403) return "That API key was rejected. Check it in Settings.";
+    if (status === 400) return "The AI service rejected the request. Try rephrasing your prompt.";
+    return "";
+  };
+
+  // Exponential backoff with jitter. Jitter matters more than the backoff here:
+  // 20 students who all clicked Send at the same moment would otherwise retry in
+  // lockstep and hit the same wall together.
+  const TRANSIENT_ATTEMPTS = 4;
+  const backoffMs = (attempt) => Math.round((1200 * Math.pow(2.2, attempt)) * (0.7 + Math.random() * 0.6));
+
+  /* A whole class clicks Send within a couple of seconds of each other, which
+     turns 20 students into a 20-request burst against a per-minute limit. A small
+     random delay on the FIRST call of a generation spreads that burst out. It is
+     invisible next to model latency, and it is the single cheapest way to stop
+     free-tier 429s in a live lesson. Set to 0 to disable. */
+  let CLASS_JITTER_MS = 2500;
+  const classJitter = () => Math.round(Math.random() * CLASS_JITTER_MS);
+
+  const withTransientRetry = async (fn, signal) => {
+    let lastError = null;
+    for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
+      try {
+        return await fn();
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        if (!error || !error.transient) throw error;
+        lastError = error;
+        if (attempt === TRANSIENT_ATTEMPTS - 1) break;
+        const delay = backoffMs(attempt);
+        const note = friendlyProviderError(error) || "The AI service is busy. Trying again.";
+        setActivity(note);
+        logLine("Upstream " + (error.status || "error") + ". Retry " + (attempt + 1)
+          + " of " + (TRANSIENT_ATTEMPTS - 1) + " in " + Math.round(delay / 100) / 10 + "s.");
+        await waitWithAbort(delay, signal);
+      }
+    }
+    const friendly = friendlyProviderError(lastError);
+    const wrapped = new Error(friendly
+      ? friendly.replace(/Trying again.*$/, "").trim() + " It did not recover after several tries, so please try again in a minute."
+      : (lastError && lastError.message) || "Request failed");
+    wrapped.status = lastError && lastError.status;
+    throw wrapped;
+  };
+
+  /* ── daily request budget ──────────────────────────────────
+     Free provider tiers cap REQUESTS PER DAY, and one student prompt can cost
+     several requests once retries fire. Showing the count makes that visible
+     instead of the class discovering it as a wall of errors mid-lesson.
+     DAILY_REQUEST_BUDGET is a display target, not an enforced limit -- the real
+     limit lives at the provider. Set to 0 to hide the counter entirely. */
+  let DAILY_REQUEST_BUDGET = 200;
+  const STORAGE_USAGE = "vibbit_daily_usage";
+
+  const todayKey = () => new Date().toISOString().slice(0, 10);
+
+  const readUsage = () => {
+    try {
+      const parsed = JSON.parse(storageGet(STORAGE_USAGE) || "{}");
+      if (parsed && parsed.day === todayKey()) {
+        return { day: parsed.day, requests: Number(parsed.requests) || 0, prompts: Number(parsed.prompts) || 0 };
+      }
+    } catch (error) {
+    }
+    return { day: todayKey(), requests: 0, prompts: 0 };
+  };
+
+  const writeUsage = (usage) => {
+    try { storageSet(STORAGE_USAGE, JSON.stringify(usage)); } catch (error) {}
+  };
+
+  const bumpUsage = (field) => {
+    const usage = readUsage();
+    usage[field] = (usage[field] || 0) + 1;
+    writeUsage(usage);
+    renderUsage();
+  };
+
+  const renderUsage = () => {
+    const el = document.getElementById("vibbit-usage");
+    if (!el) return;
+    if (!DAILY_REQUEST_BUDGET) { el.style.display = "none"; return; }
+    const usage = readUsage();
+    const left = Math.max(0, DAILY_REQUEST_BUDGET - usage.requests);
+    const ratio = usage.requests / DAILY_REQUEST_BUDGET;
+    el.style.display = "";
+    el.textContent = left + " left today";
+    el.title = usage.prompts + " prompt(s) today used " + usage.requests
+      + " AI request(s). Retries cost extra requests. This is a guide, not the provider's real limit.";
+    el.style.color = ratio >= 1 ? "#f85149" : (ratio > 0.8 ? "#d29922" : "#4a5f82");
+  };
 
   let BASE_TEMP = 0.1;
   // Raised from 3072. Reasoning models spend part of this budget on thinking
@@ -4099,7 +4391,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const budget = () => scaledMaxTok(currentTokenScale);
   const thinkingBudget = () => Math.max(16384, budget());
 
-  const sysFor = (target) => buildSystemPrompt(target, { conversational: true });
+  // requestHint and currentCode drive extension detection. Without them the
+  // extension registry never fires and the model reports that neopixel/sonar/
+  // blehid are "not in its toolkit" -- which was true, because nobody told it.
+  const sysFor = (target, requestHint, currentCode) => buildSystemPrompt(target, {
+    conversational: true,
+    requestHint: requestHint || "",
+    currentCode: currentCode || ""
+  });
 
   const MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
   const CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
@@ -4164,7 +4463,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           signal
         })
           .then((response) => {
-            if (!response.ok) return response.text().then((text) => { throw new Error(text); });
+            if (!response.ok) return response.text().then((text) => { throw httpError(response, text); });
             return response.json();
           })
           .then(extractResponsesText),
@@ -4191,7 +4490,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         signal
       })
         .then((response) => {
-          if (!response.ok) return response.text().then((text) => { throw new Error(text); });
+          if (!response.ok) return response.text().then((text) => { throw httpError(response, text); });
           return response.json();
         })
         .then((data) => ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim()),
@@ -4214,7 +4513,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         signal
       })
         .then((response) => {
-          if (!response.ok) return response.text().then((text) => { throw new Error(text); });
+          if (!response.ok) return response.text().then((text) => { throw httpError(response, text); });
           return response.json();
         })
         .then((data) => extractGeminiText(data)),
@@ -4253,7 +4552,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           signal
         })
           .then((response) => {
-            if (!response.ok) return response.text().then((text) => { throw new Error(text || ("HTTP " + response.status)); });
+            if (!response.ok) return response.text().then((text) => { throw httpError(response, text); });
             return response.json();
           })
           .then((data) => ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim()),
@@ -4330,7 +4629,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         signal
       })
         .then((response) => {
-          if (!response.ok) return response.text().then((text) => { throw new Error(text || ("HTTP " + response.status)); });
+          if (!response.ok) return response.text().then((text) => { throw httpError(response, text); });
           return response.json();
         })
         .then((data) => {
@@ -4363,7 +4662,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         const flat = serializeTranscript(messages);
         logLine("Sending to " + providerName + " (" + (model || "default") + ")"
           + (currentTokenScale > 1 ? " with a larger token budget (" + budget() + ")." : "."));
-        const raw = await callProvider(apiKey, model, flat.system, flat.user, signal);
+        if (CLASS_JITTER_MS > 0 && currentTokenScale === 1) {
+          await waitWithAbort(classJitter(), signal);
+        }
+        bumpUsage("requests");
+        const raw = await withTransientRetry(
+          () => callProvider(apiKey, model, flat.system, flat.user, signal),
+          signal
+        );
         throwIfAborted(signal);
         return raw;
       }
@@ -4748,7 +5054,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           const model = storageGet(STORAGE_MODEL) || "";
 
           logLine("Mode: BYOK.");
-          return askValidated(provider, apiKey, model, sysFor(target), userFor(effectiveRequest, currentCode, pageErrors, conversionDialog, recentChatContext), target, signal);
+          bumpUsage("prompts");
+          return askValidated(provider, apiKey, model, sysFor(target, effectiveRequest, currentCode), userFor(effectiveRequest, currentCode, pageErrors, conversionDialog, recentChatContext), target, signal);
         })
         .then((result) => {
           throwIfAborted(signal);
@@ -4810,6 +5117,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
               setStatus("Done");
               logLine("Pasted and switched back to Blocks.");
               updateAssistantMessage(assistantIdx, { status: "done", feedback: finalFeedback, code: lastGeneratedCode, content: "" });
+              // Re-check against the code that actually landed, not just the prompt.
+              try { renderExtensionBanner("", lastGeneratedCode); } catch (error) {}
             });
         });
     };

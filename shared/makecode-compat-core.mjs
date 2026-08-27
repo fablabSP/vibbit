@@ -12,6 +12,8 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "detectRequiredExtensions",
   "extensionDependencies",
   "buildExtensionPromptExtras",
+  "buildAllExtensionPromptExtras",
+  "detectMissingCapability",
   "buildSystemPrompt",
   "buildCorrectionInstruction",
   "stubForTarget",
@@ -902,7 +904,7 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
     // Detects use in generated code.
     detect: /\bneopixel\s*\./,
     // Detects intent in a natural-language request (prompt injection trigger).
-    intent: /\b(neo\s?pixel|ws2812|led strip|light strip|addressable led|rgb strip)\b/i,
+    intent: /\b(neo\s?pixel|ws2812|led strip|light strip|addressable led|rgb strip|strip of leds|colou?red lights|rainbow lights)\b/i,
     apis: [
       "neopixel.create(DigitalPin, numLeds, NeoPixelMode) -> Strip",
       "strip.show(), strip.clear(), strip.setBrightness(0-255), strip.rotate(offset)",
@@ -939,7 +941,7 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
     pkg: "sonar",
     docs: "https://makecode.microbit.org/pkg/microsoft/pxt-sonar",
     detect: /\bsonar\s*\./,
-    intent: /\b(sonar|ultrasonic|hc-?sr04|distance sensor|range finder|rangefinder)\b/i,
+    intent: /\b(sonar|ultrasonic|hc-?sr04|distance sensor|range ?finder|measure distance|how far|proximity)\b/i,
     apis: [
       "sonar.ping(trig: DigitalPin, echo: DigitalPin, unit: PingUnit) -> number",
       "sonar.ping(trig, echo, unit, maxCmDistance) -> number"
@@ -970,7 +972,7 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
     pkg: "github:bsiever/microbit-pxt-blehid#v0.3.4",
     docs: "https://makecode.microbit.org/pkg/bsiever/microbit-pxt-blehid",
     detect: /\b(keyboard|mouse|media|absmouse)\s*\./,
-    intent: /\b(ble ?hid|bluetooth keyboard|bluetooth mouse|hid|act as a keyboard|control my computer|keypress|send keystrokes)\b/i,
+    intent: /\b(ble ?hid|hid|bluetooth|keypress|key ?stroke|act as a (?:keyboard|mouse)|control (?:my |the )?(?:computer|laptop|pc)|type on (?:my |the )?(?:computer|laptop|pc)|wireless (?:keyboard|mouse)|send (?:it |them |the .{0,20})?to (?:my |the )?(?:computer|laptop|pc))\b/i,
     apis: [
       "keyboard.startKeyboardService(), keyboard.sendString(text), keyboard.sendSimultaneousKeys(keys, isDown)",
       "mouse.startMouseService(), mouse.movePointer(dx, dy), mouse.setButton(MouseButton, isDown)",
@@ -1053,6 +1055,31 @@ function extensionEntries() {
 // Returns the extension ids a piece of code (and/or a request) needs.
 // `code` is authoritative; `request` only adds intent-based hints so the system
 // prompt can be primed before any code exists.
+// Regexes will always have holes. When the model itself reports that something
+// is unavailable, that admission is a more reliable signal than any pattern we
+// can write -- so treat it as a failure and retry with every extension loaded.
+const MISSING_CAPABILITY_PATTERNS = [
+  /\b(?:isn't|is not|aren't|are not|not) (?:in|part of|available in|included in) (?:my|the|your) (?:current )?(?:toolkit|toolset|tools|library|libraries|blocks|extensions?)\b/i,
+  /\bdon't have (?:access to|the)\b/i,
+  /\b(?:no|without) (?:access to|support for) (?:the )?\w+ extension\b/i,
+  /\bextension (?:isn't|is not|was not|wasn't) (?:available|installed|loaded)\b/i,
+  /\b(?:used|using|switched to|fell back to|instead) .{0,40}\b(?:since|because) .{0,40}\b(?:isn't|is not|not) (?:available|in)\b/i
+];
+
+export function detectMissingCapability(feedback) {
+  const text = (Array.isArray(feedback) ? feedback.join(" ") : String(feedback || ""));
+  if (!text.trim()) return false;
+  return MISSING_CAPABILITY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+// Every extension's grounding at once. Used only for the retry after a missing
+// capability report, where correctness beats keeping the prompt lean.
+export function buildAllExtensionPromptExtras(target) {
+  if (target !== "microbit") return [];
+  const ids = Object.keys(MICROBIT_EXTENSIONS);
+  return buildExtensionPromptExtrasForIds(ids);
+}
+
 export function detectRequiredExtensions(code, request = "", target = "microbit") {
   if (target !== "microbit") return [];
   const codeView = stripNonCodeSegments(String(code || ""));
@@ -1078,9 +1105,7 @@ export function extensionDependencies(ids) {
 // Prompt grounding for the detected extensions only. Injecting all of them on
 // every request wastes context and biases the model towards reaching for a
 // strip when led.plot would do.
-export function buildExtensionPromptExtras(target, requestHint = "", code = "") {
-  if (target !== "microbit") return [];
-  const ids = detectRequiredExtensions(code, requestHint, target);
+function buildExtensionPromptExtrasForIds(ids) {
   const lines = [];
   for (const id of ids) {
     const entry = MICROBIT_EXTENSIONS[id];
@@ -1094,6 +1119,13 @@ export function buildExtensionPromptExtras(target, requestHint = "", code = "") 
     lines.push(...entry.rules.map((rule) => "- " + rule));
     lines.push("Worked example:", entry.example);
   }
+  return lines;
+}
+
+export function buildExtensionPromptExtras(target, requestHint = "", code = "") {
+  if (target !== "microbit") return [];
+  const ids = detectRequiredExtensions(code, requestHint, target);
+  const lines = buildExtensionPromptExtrasForIds(ids);
   if (SERVO_INTENT.test(String(requestHint || "")) || /pins\.servo/.test(String(code || ""))) {
     lines.push("", "SERVO (built into micro:bit, no extension needed):");
     lines.push(...SERVO_RULES.map((rule) => "- " + rule));
@@ -1661,6 +1693,7 @@ export async function runGenerationLoop({
   emptyRetries = 0,
   validationRetries = 0,
   truncationRetries = 1,
+  capabilityRetries = 1,
   maxAttempts = 1,
   callModel,
   runDecompile
@@ -1670,6 +1703,10 @@ export async function runGenerationLoop({
   let truncationLeft = Math.max(0, Math.trunc(Number(truncationRetries) || 0));
   // Escalating budget: a reply cut off mid-JSON needs more room, not a reword.
   let tokenScale = 1;
+  let capabilityLeft = Math.max(0, Math.trunc(Number(capabilityRetries) || 0));
+  // Set once the model has reported a missing capability, so the retry gets the
+  // full extension catalogue appended to its system turn.
+  let capabilityBoost = "";
   let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
   let validationRetried = false;
 
@@ -1681,6 +1718,10 @@ export async function runGenerationLoop({
   let last = null;
 
   while (attempts.length < attemptLimit) {
+    if (capabilityBoost && messages[0] && messages[0].role === "system") {
+      messages[0] = transcriptTurn("system", messages[0].content + "\n" + capabilityBoost);
+      capabilityBoost = "";
+    }
     const raw = await callModel(messages, { tokenScale });
     const parsed = parseModelOutput(raw);
     const code = sanitizeMakeCode(parsed.code);
@@ -1693,6 +1734,11 @@ export async function runGenerationLoop({
     // being missing its final braces. Treat truncation as its own failure so we
     // retry with a bigger budget rather than pasting a half program.
     if (parsed.truncated && reason !== "invalid") reason = "truncated";
+    // The model saying "that extension isn't in my toolkit" means our detection
+    // missed. Retry with every extension loaded rather than shipping a fallback.
+    if (reason === "ok" && capabilityLeft > 0 && detectMissingCapability(parsed.feedback)) {
+      reason = "capability";
+    }
     let decompile = null;
     if (reason === "ok" && typeof runDecompile === "function") {
       try {
@@ -1716,6 +1762,16 @@ export async function runGenerationLoop({
 
     if (reason === "ok") break;
     if (attempts.length >= attemptLimit) break;
+
+    if (reason === "capability" && capabilityLeft > 0) {
+      capabilityLeft -= 1;
+      const extras = buildAllExtensionPromptExtras(target);
+      capabilityBoost = extras.length
+        ? "\nTHE FOLLOWING EXTENSIONS ARE AVAILABLE. Use them when asked. Tell the student to add the extension in MakeCode.\n" + extras.join("\n")
+        : "";
+      if (!capabilityBoost) break;
+      continue;
+    }
 
     if (reason === "truncated" && truncationLeft > 0) {
       truncationLeft -= 1;
