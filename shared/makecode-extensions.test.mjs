@@ -7,6 +7,8 @@ import {
   buildSystemPrompt,
   detectRequiredExtensions,
   extensionDependencies,
+  parseModelOutput,
+  runGenerationLoop,
   runValidateBlocks
 } from "./makecode-compat-core.mjs";
 
@@ -116,4 +118,88 @@ test("registry examples pass the validator they are meant to teach", () => {
     const result = runValidateBlocks(entry.example, "microbit");
     assert.equal(result.ok, true, `${entry.id} example: ${result.violations.join(", ")}`);
   }
+});
+
+/* ── envelope truncation guards ───────────────────────────── */
+
+test("a truncated JSON envelope never becomes code verbatim", () => {
+  const broken = '{"feedback":["Shake your micro:bit"],"code":"let options = [0, 1, 2]\\nbasic.showIcon(IconNames.Square)';
+  const parsed = parseModelOutput(broken);
+  assert.doesNotMatch(parsed.code, /"feedback"/);
+  assert.doesNotMatch(parsed.code, /^\{/);
+  assert.match(parsed.code, /basic\.showIcon/);
+  assert.equal(parsed.truncated, true);
+  assert.deepEqual(parsed.feedback, ["Shake your micro:bit"]);
+});
+
+test("an unsalvageable envelope returns empty code so the loop retries", () => {
+  const parsed = parseModelOutput('{"feedback":["thinking about it"');
+  assert.equal(parsed.code, "");
+  assert.equal(parsed.truncated, true);
+});
+
+test("well-formed envelopes are unaffected", () => {
+  const parsed = parseModelOutput('{"feedback":["ok"],"code":"basic.showNumber(1)"}');
+  assert.equal(parsed.code, "basic.showNumber(1)");
+  assert.equal(parsed.truncated, undefined);
+});
+
+test("plain code with no envelope still passes through", () => {
+  assert.equal(parseModelOutput("basic.showNumber(1)").code, "basic.showNumber(1)");
+});
+
+test("validator rejects a leaked envelope outright", () => {
+  const result = runValidateBlocks('{"feedback":["x"],"code":"basic.showNumber(1)"}', "microbit");
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.some((v) => /JSON envelope/.test(v)));
+});
+
+/* ── truncation detection ─────────────────────────────────── */
+
+test("a cut-off handler fails validation instead of being pasted", () => {
+  const cut = [
+    "let roll = 0",
+    "let dice = [1, 2, 3, 4, 5, 6]",
+    "input.onGesture(Gesture.Shake, function () {",
+    "    roll = dice._pickRandom()",
+    "    basic.showNumber(roll)"
+  ].join("\n");
+  const result = runValidateBlocks(cut, "microbit");
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.some((v) => /cut off/.test(v)));
+});
+
+test("the same program with its closing brace passes", () => {
+  const full = [
+    "let roll = 0",
+    "let dice = [1, 2, 3, 4, 5, 6]",
+    "input.onGesture(Gesture.Shake, function () {",
+    "    roll = dice._pickRandom()",
+    "    basic.showNumber(roll)",
+    "})"
+  ].join("\n");
+  assert.equal(runValidateBlocks(full, "microbit").ok, true);
+});
+
+test("braces inside strings do not trigger a false cut-off", () => {
+  assert.equal(runValidateBlocks('basic.showString("}")', "microbit").ok, true);
+});
+
+test("truncation triggers a retry with a larger token budget", async () => {
+  const scales = [];
+  const result = await runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "user",
+    maxAttempts: 3,
+    truncationRetries: 1,
+    callModel: async (messages, options) => {
+      scales.push((options && options.tokenScale) || 1);
+      return scales.length === 1
+        ? '{"feedback":["x"],"code":"basic.showNumber(1)'
+        : '{"feedback":["x"],"code":"basic.showNumber(1)"}';
+    }
+  });
+  assert.deepEqual(scales, [1, 3], "second attempt must ask for more room");
+  assert.equal(result.outcome ?? "ok", "ok");
 });

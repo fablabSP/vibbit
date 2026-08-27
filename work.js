@@ -1,5 +1,7 @@
 const BACKEND = "https://vibbit.tk.sg";
 const HOSTED_MANAGED = false;
+  // Overwritten at build time from package.json. "dev" means an unbuilt source run.
+  const VIBBIT_VERSION = "dev";
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {
@@ -276,7 +278,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <path d="M7 2a5 5 0 0 1 5 5" stroke-linecap="round"></path>'
     + '    </svg>'
     + '  </span>'
+    + '  <span id="vibbit-version" style="margin-left:8px;color:#4a5f82;font-size:10px;font-weight:500;letter-spacing:.02em">v' + VIBBIT_VERSION + '</span>'
     + '  <span id="status" style="display:none">Idle</span>'
+    + '  <button id="editor-pill" type="button" title="MakeCode editor connection" style="margin-left:10px;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid #29324e;background:#0b1020;color:#8899bb;font-size:11px;font-weight:500;cursor:pointer;font-family:inherit">'
+    + '    <span id="editor-dot" style="width:7px;height:7px;border-radius:50%;background:#5a6d8f;flex-shrink:0"></span>'
+    + '    <span id="editor-pill-text">Checking\u2026</span>'
+    + '  </button>'
     + '  <button id="gear" aria-label="Settings" style="margin-left:auto;' + S_ICON_BTN + '"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 01-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.17.31a1.464 1.464 0 01-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 01.872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.31-.17a1.464 1.464 0 012.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 012.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.17-.31a1.464 1.464 0 01.872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 01-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.31.17a1.464 1.464 0 01-2.105-.872zM8 10.93a2.929 2.929 0 110-5.86 2.929 2.929 0 010 5.858z"/></svg></button>'
     + '  <button id="x-main" aria-label="Close" style="margin-left:6px;' + S_ICON_BTN + '">' + CLOSE_SVG + '</button>'
     + '</div>'
@@ -425,6 +432,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     ".vibbit-btn-undo{border:1px solid #29324e;background:transparent;color:#8899bb}",
     ".vibbit-btn-fix{border:1px solid #d97706;background:rgba(217,119,6,0.15);color:#fbbf24}",
     ".vibbit-btn-cancel{border:1px solid #dc2626;background:rgba(220,38,38,0.18);color:#fecaca}",
+    "@keyframes vibbit-pulse{0%,100%{opacity:1}50%{opacity:.35}}",
+    ".vibbit-dot-waiting{animation:vibbit-pulse 1.4s ease-in-out infinite}",
+    ".vibbit-chip{padding:7px 12px;border-radius:999px;border:1px solid #29324e;background:#0b1020;color:#9bb1dd;font-size:12px;cursor:pointer;font-family:inherit;text-align:left;line-height:1.35}",
+    ".vibbit-chip:hover{background:#16203a;border-color:#3454D1;color:#dbe4f7}",
     ".vibbit-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;gap:14px;color:#4a5f82;padding:40px 20px;text-align:center;user-select:none}"
   ].join("\n");
   /* ── FAB ─────────────────────────────────────────────────── */
@@ -446,6 +457,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const openPanel = function () {
+    try { startEditorPolling(); } catch (error) {}
     if (!ensureRuntimeMounted()) return;
     fab.style.display = "none";
     previewBar.style.display = "none";
@@ -459,6 +471,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const closePanel = function () {
+    try { stopEditorPolling(); } catch (error) {}
     if (!ensureRuntimeMounted()) return;
     backdrop.dataset.active = "";
     previewBar.style.display = "none";
@@ -679,6 +692,65 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   let loadingAssistantIdx = -1;
   let loadingVerbPhase = "model";
 
+  /* ── MakeCode editor readiness ─────────────────────────────
+     Polls continuously while the panel is open so the pill reflects the live
+     state. The user should never have to send a message to discover that the
+     editor is not connected. */
+  const editorPill = $("#editor-pill");
+  const editorDot = $("#editor-dot");
+  const editorPillText = $("#editor-pill-text");
+
+  const EDITOR_STATES = {
+    ready:   { dot: "#3fb950", text: "Editor connected",  title: "Vibbit can read and write your MakeCode project." },
+    loading: { dot: "#d29922", text: "Editor loading\u2026", title: "MakeCode is open. Waiting for the JavaScript editor to load." },
+    absent:  { dot: "#f85149", text: "No project open",   title: "Open a MakeCode project, then click here to re-check." }
+  };
+
+  let editorState = "";
+  let editorPollTimer = null;
+
+  const applyEditorState = (name) => {
+    if (name === editorState) return;
+    editorState = name;
+    const conf = EDITOR_STATES[name] || EDITOR_STATES.absent;
+    editorDot.style.background = conf.dot;
+    editorDot.className = name === "ready" ? "" : "vibbit-dot-waiting";
+    editorPillText.textContent = conf.text;
+    editorPill.title = conf.title;
+    editorPill.style.borderColor = name === "ready" ? "#1f4d2c" : "#29324e";
+    const empty = chatMessagesEl.querySelector(".vibbit-empty-state");
+    if (empty) renderEmptyState();
+  };
+
+  const refreshEditorState = () => {
+    try {
+      if (probeMonacoCtx()) applyEditorState("ready");
+      else if (looksLikeProjectEditor()) applyEditorState("loading");
+      else applyEditorState("absent");
+    } catch (error) {
+      applyEditorState("absent");
+    }
+  };
+
+  const startEditorPolling = () => {
+    refreshEditorState();
+    if (editorPollTimer) return;
+    editorPollTimer = setInterval(refreshEditorState, 1500);
+  };
+
+  const stopEditorPolling = () => {
+    if (!editorPollTimer) return;
+    clearInterval(editorPollTimer);
+    editorPollTimer = null;
+  };
+
+  // Clicking the pill nudges MakeCode into opening the text editor, which is
+  // usually all that is needed when it reports "loading".
+  editorPill.onclick = () => {
+    try { tryOpenTextEditor(); } catch (error) {}
+    refreshEditorState();
+  };
+
   const setStatus = (value) => {
     const next = value || "";
     statusEl.textContent = next;
@@ -889,13 +961,60 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const SPINNER_SMALL = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#7088ad" stroke-width="1.5" style="animation:vibbit-spin .9s linear infinite"><circle cx="7" cy="7" r="5" stroke-opacity=".25"></circle><path d="M7 2a5 5 0 0 1 5 5" stroke-linecap="round"></path></svg>';
   const CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#89e6a3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7l4 4 6-7"/></svg>';
 
+  /* Starter prompts. Kept deliberately concrete: a student who does not know
+     what to type learns more from a working example than from a blank box.
+     'needs' names an extension so the chip can warn before generating. */
+  const STARTER_PROMPTS = [
+    { label: "Beating heart animation", prompt: "show a beating heart animation on the LED screen that keeps repeating" },
+    { label: "Rock paper scissors", prompt: "make rock paper scissors: when I shake the micro:bit, randomly show a rock, paper or scissors icon on the LED screen" },
+    { label: "Random dice", prompt: "when I shake the micro:bit, show a random number from 1 to 6 on the LED screen" },
+    { label: "Step counter", prompt: "count my steps using the shake gesture and show the total when I press button B" },
+    { label: "Two-player radio chat", prompt: "use radio on group 1 so pressing A sends a smiley to the other micro:bit and pressing B sends a sad face" },
+    { label: "Rainbow LED strip", prompt: "make a rainbow on a neopixel strip of 8 LEDs connected to pin P1", needs: "neopixel" },
+    { label: "Distance alarm", prompt: "use an ultrasonic sensor on P1 and P2, and show a skull icon when something is closer than 10 cm", needs: "sonar" },
+    { label: "Servo gate", prompt: "when I press button A move a servo on pin P1 to 90 degrees, and when I press B move it back to 0", needs: "servo" }
+  ];
+
+  const starterChipsHTML = () => STARTER_PROMPTS.map((item, index) =>
+    '<button type="button" class="vibbit-chip" data-starter="' + index + '">' + escapeHTML(item.label) + '</button>'
+  ).join("");
+
+  const editorHintHTML = () => {
+    if (editorState === "ready" || !editorState) return "";
+    const message = editorState === "loading"
+      ? "MakeCode is open but the JavaScript editor has not loaded yet. Click the pill above, or open the JavaScript tab."
+      : "Open a MakeCode project first. Vibbit needs the project editor, not the home page.";
+    return '<div style="margin-top:4px;padding:9px 12px;border-radius:9px;border:1px solid #3d2f16;background:#1c1608;color:#d29922;font-size:12px;line-height:1.45;max-width:360px">'
+      + escapeHTML(message) + '</div>';
+  };
+
   const renderEmptyState = () => {
     chatMessagesEl.innerHTML = '<div class="vibbit-empty-state">'
       + SPARKLE_SVG
       + '<div style="font-size:16px;font-weight:600;color:#8899bb">What would you like to build?</div>'
-      + '<div style="font-size:13px;line-height:1.5;max-width:340px;color:#5a6d8f">Describe your MakeCode project and I\'ll generate the block code for you.</div>'
+      + '<div style="font-size:13px;line-height:1.5;max-width:340px;color:#5a6d8f">Describe your MakeCode project, or start from one of these.</div>'
+      + editorHintHTML()
+      + '<div style="display:flex;flex-wrap:wrap;gap:7px;justify-content:center;max-width:380px;margin-top:4px">'
+      + starterChipsHTML()
+      + '</div>'
       + '</div>';
   };
+
+  // Delegated so chips keep working after every re-render of the empty state.
+  chatMessagesEl.addEventListener("click", (event) => {
+    const chip = event.target && event.target.closest ? event.target.closest("[data-starter]") : null;
+    if (!chip) return;
+    const item = STARTER_PROMPTS[Number(chip.getAttribute("data-starter"))];
+    if (!item) return;
+    // Put it in the box rather than firing immediately: the student can read it,
+    // change the pin or the colour, and learn what a good prompt looks like.
+    promptEl.value = item.prompt;
+    promptEl.focus();
+    promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+    if (item.needs && item.needs !== "servo") {
+      setActivity("Add the " + item.needs + " extension in MakeCode before running this one.");
+    }
+  });
 
   const scrollChatToBottom = () => {
     requestAnimationFrame(() => { chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight; });
@@ -1618,22 +1737,81 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return null;
   };
 
-  const findMonacoCtx = (timeoutMs = 18000, signal) => {
-    const deadline = performance.now() + timeoutMs;
-    const candidates = [window, ...[...document.querySelectorAll("iframe")].map((frame) => {
+  // Enumerate every window that might host Monaco. MakeCode creates, replaces and
+  // re-mounts its editor iframe as the user moves around, so this MUST be
+  // recomputed on every poll. Snapshotting it once was the cause of "Monaco not
+  // found" firing on a project page that was in fact ready.
+  const monacoCandidateWindows = () => {
+    const frames = [...document.querySelectorAll("iframe")].map((frame) => {
       try {
         return frame.contentWindow;
       } catch (error) {
         return null;
       }
-    })].filter(Boolean);
+    });
+    return [window, ...frames].filter(Boolean);
+  };
 
-    candidates.forEach((ctx) => {
+  // Pull a live Monaco handle out of a window, or null. No waiting, no side
+  // effects, so it is safe to call on a timer for the readiness indicator.
+  const readMonacoFrom = (ctx) => {
+    try {
+      const monaco = ctx.monaco;
+      if (!monaco || !monaco.editor) return null;
+      const models = monaco.editor.getModels();
+      if (!models || !models.length) return null;
+      const editors = monaco.editor.getEditors ? monaco.editor.getEditors() : [];
+      const editor = editors && editors.length ? editors[0] : null;
+      const model = (editor && editor.getModel && editor.getModel()) || models[0];
+      return model ? { win: ctx, editor, model } : null;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  // Non-blocking probe used by the readiness pill.
+  const probeMonacoCtx = () => {
+    for (const ctx of monacoCandidateWindows()) {
+      const found = readMonacoFrom(ctx);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  // True when we are on a project editor page at all, even before Monaco has
+  // been loaded. Lets us tell "wrong page" apart from "right page, still loading".
+  const looksLikeProjectEditor = () => {
+    try {
+      if (/[?&#]/.test(location.search + location.hash) && /project|editor/i.test(location.search + location.hash)) return true;
+      const markers = "#maineditor, .blocklyWorkspace, #blocksEditor, .monaco-editor, [class*='blocklySvg']";
+      if (document.querySelector(markers)) return true;
+      for (const ctx of monacoCandidateWindows()) {
+        try {
+          if (ctx.document && ctx.document.querySelector(markers)) return true;
+        } catch (error) {
+        }
+      }
+    } catch (error) {
+    }
+    return false;
+  };
+
+  const tryOpenTextEditor = () => {
+    for (const ctx of monacoCandidateWindows()) {
       try {
         clickLike(ctx.document, ["javascript", "typescript", "text"]);
       } catch (error) {
       }
-    });
+    }
+  };
+
+  const findMonacoCtx = (timeoutMs = 18000, signal) => {
+    const deadline = performance.now() + timeoutMs;
+    // Switching to the JS/TS tab is what makes MakeCode load Monaco at all.
+    // Retried on a slow cadence below, because the tab may not exist yet on the
+    // first pass while the editor is still mounting.
+    tryOpenTextEditor();
+    let nextNudge = performance.now() + 2000;
 
     return new Promise((resolve, reject) => {
       (function poll() {
@@ -1642,23 +1820,20 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           return;
         }
         if (performance.now() >= deadline) {
-          reject(new Error("Monaco not found. Open the project editor, not the home page."));
+          reject(new Error(looksLikeProjectEditor()
+            ? "Could not open the JavaScript editor. Click the JavaScript tab at the top of MakeCode, then try again."
+            : "Monaco not found. Open a MakeCode project first, not the home page."));
           return;
         }
-        for (const ctx of candidates) {
-          try {
-            const monaco = ctx.monaco;
-            if (!monaco || !monaco.editor) continue;
-            const models = monaco.editor.getModels();
-            if (!models || !models.length) continue;
-            const editors = monaco.editor.getEditors ? monaco.editor.getEditors() : [];
-            const editor = editors && editors.length ? editors[0] : null;
-            const model = (editor && editor.getModel && editor.getModel()) || models[0];
-            if (model) {
-              resolve({ win: ctx, editor, model });
-              return;
-            }
-          } catch (error) {
+        if (performance.now() >= nextNudge) {
+          nextNudge = performance.now() + 2000;
+          tryOpenTextEditor();
+        }
+        for (const ctx of monacoCandidateWindows()) {
+          const found = readMonacoFrom(ctx);
+          if (found) {
+            resolve(found);
+            return;
           }
         }
         setTimeout(poll, 100);
@@ -2065,6 +2240,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     buildUserPrompt,
     extractCode,
     parseModelOutput,
+    salvageCodeFromPartialJson,
     validateBlocksCompatibility,
     buildTargetPromptExtras,
     MICROBIT_EXTENSIONS,
@@ -2298,6 +2474,55 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return sanitizeMakeCode(code);
     }
 
+    // True when the model clearly TRIED to emit the JSON envelope. If parsing then
+    // fails, the raw text is a broken envelope, not code, and must never be treated
+    // as code -- pasting it drops {"feedback":[...] straight into the editor.
+    function looksLikeEnvelopeAttempt(raw) {
+      const text = String(raw || "").trim();
+      if (!text.startsWith("{") && !/^```/.test(text)) return false;
+      return /"(?:feedback|code)"\s*:/.test(text);
+    }
+
+    // Recover the code string from an envelope that was cut off mid-flight, which is
+    // what a max_tokens truncation looks like. Walks the JSON string manually and
+    // honours escapes, so a partial value still yields usable code.
+    function salvageCodeFromPartialJson(raw) {
+      const text = String(raw || "");
+      const keyMatch = text.match(/"code"\s*:\s*"/);
+      if (!keyMatch) return "";
+      let out = "";
+      let escaped = false;
+      for (let i = keyMatch.index + keyMatch[0].length; i < text.length; i += 1) {
+        const char = text[i];
+        if (escaped) {
+          if (char === "n") out += "\n";
+          else if (char === "t") out += "\t";
+          else if (char === "r") out += "";
+          else out += char;
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") { escaped = true; continue; }
+        if (char === "\"") break;
+        out += char;
+      }
+      return out;
+    }
+
+    function salvageFeedbackFromPartialJson(raw) {
+      const text = String(raw || "");
+      const match = text.match(/"feedback"\s*:\s*\[([\s\S]*?)\]/);
+      if (!match) return [];
+      const items = match[1].match(/"(?:\\.|[^"\\])*"/g) || [];
+      return items.map((item) => {
+        try {
+          return JSON.parse(item);
+        } catch (error) {
+          return item.replace(/^"|"$/g, "");
+        }
+      });
+    }
+
     function parseModelOutput(raw) {
       const parsedObjects = parseJsonObjectsFromText(raw);
       for (const parsed of parsedObjects) {
@@ -2310,6 +2535,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           code: extractCode(parsed.code == null ? "" : String(parsed.code))
         };
       }
+
+      if (looksLikeEnvelopeAttempt(raw)) {
+        // Broken envelope. Salvage the code field if we can; otherwise return empty
+        // so the generation loop retries instead of pasting JSON into the editor.
+        const salvaged = sanitizeMakeCode(salvageCodeFromPartialJson(raw));
+        return {
+          feedback: normaliseFeedback(salvageFeedbackFromPartialJson(raw)),
+          code: salvaged,
+          salvaged: Boolean(salvaged),
+          truncated: true
+        };
+      }
+
       return { feedback: [], code: extractCode(raw) };
     }
 
@@ -3354,6 +3592,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       }
 
       const violations = [];
+      // Belt and braces: if an unparsed envelope ever reaches the validator, fail
+      // loudly rather than letting it be pasted into the student's editor.
+      if (/^\s*\{\s*"(?:feedback|code)"\s*:/.test(String(code || ""))) {
+        return { ok: false, violations: ["raw JSON envelope leaked into code"], warnings: [], extensions: [] };
+      }
       for (const rule of rules) {
         if (typeof rule.test === "function") {
           if (rule.test(code)) violations.push(rule.why);
@@ -3450,6 +3693,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           } catch {
             // A warning heuristic must never take down validation.
           }
+        }
+      }
+
+      // A program missing its closing braces is a truncated generation, not a style
+      // problem. Catching it here means the loop retries instead of pasting a
+      // half-written handler into the student's editor.
+      const delimiterPairs = [["{", "}"], ["(", ")"], ["[", "]"]];
+      for (const [open, close] of delimiterPairs) {
+        const opens = (codeView.match(new RegExp("\\" + open, "g")) || []).length;
+        const closes = (codeView.match(new RegExp("\\" + close, "g")) || []).length;
+        if (opens !== closes) {
+          violations.push("unbalanced " + open + close + " (code looks cut off)");
+          break;
         }
       }
 
@@ -3638,12 +3894,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       initialUserPrompt,
       emptyRetries = 0,
       validationRetries = 0,
+      truncationRetries = 1,
       maxAttempts = 1,
       callModel,
       runDecompile
     } = {}) {
       const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
       let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
+      let truncationLeft = Math.max(0, Math.trunc(Number(truncationRetries) || 0));
+      // Escalating budget: a reply cut off mid-JSON needs more room, not a reword.
+      let tokenScale = 1;
       let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
       let validationRetried = false;
 
@@ -3655,7 +3915,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       let last = null;
 
       while (attempts.length < attemptLimit) {
-        const raw = await callModel(messages);
+        const raw = await callModel(messages, { tokenScale });
         const parsed = parseModelOutput(raw);
         const code = sanitizeMakeCode(parsed.code);
         const validation = runValidateBlocks(code, target);
@@ -3663,6 +3923,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         let reason = !String(code || "").trim()
           ? "empty"
           : (validation.ok ? "ok" : "invalid");
+        // A salvaged-but-truncated reply may still pass the static validator while
+        // being missing its final braces. Treat truncation as its own failure so we
+        // retry with a bigger budget rather than pasting a half program.
+        if (parsed.truncated && reason !== "invalid") reason = "truncated";
         let decompile = null;
         if (reason === "ok" && typeof runDecompile === "function") {
           try {
@@ -3679,12 +3943,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           feedback: parsed.feedback,
           validation,
           reason,
-          decompile
+          decompile,
+          truncated: Boolean(parsed.truncated)
         };
         attempts.push(last);
 
         if (reason === "ok") break;
         if (attempts.length >= attemptLimit) break;
+
+        if (reason === "truncated" && truncationLeft > 0) {
+          truncationLeft -= 1;
+          tokenScale *= 3;
+          // Same messages, bigger budget. Rewording would not help; the model ran
+          // out of room, it did not misunderstand.
+          continue;
+        }
 
         if (reason === "empty" && emptyLeft > 0) {
           emptyLeft -= 1;
@@ -3793,6 +4066,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       buildUserPrompt,
       extractCode,
       parseModelOutput,
+      salvageCodeFromPartialJson,
       validateBlocksCompatibility,
       buildTargetPromptExtras,
       MICROBIT_EXTENSIONS,
@@ -3813,7 +4087,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   // END_SHARED_COMPAT_CORE
 
   let BASE_TEMP = 0.1;
-  let MAXTOK = 3072;
+  // Raised from 3072. Reasoning models spend part of this budget on thinking
+  // before a single output token appears, so a tight cap truncated ordinary
+  // programs mid-JSON. runGenerationLoop escalates it further on truncation.
+  let MAXTOK = 8192;
+  const MAXTOK_CEILING = 32768;
+  const scaledMaxTok = (scale) => Math.min(MAXTOK_CEILING, Math.round(MAXTOK * (Number(scale) || 1)));
+  // Set by callModel immediately before each provider call. Kept as module state
+  // so the provider functions keep their existing signatures.
+  let currentTokenScale = 1;
+  const budget = () => scaledMaxTok(currentTokenScale);
+  const thinkingBudget = () => Math.max(16384, budget());
 
   const sysFor = (target) => buildSystemPrompt(target, { conversational: true });
 
@@ -3868,7 +4152,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (resolvedModel === "gpt-5.6-luna") {
       const body = {
         model: resolvedModel,
-        max_output_tokens: thinkHarderEnabled ? 16384 : MAXTOK,
+        max_output_tokens: thinkHarderEnabled ? thinkingBudget() : budget(),
         input: [{ role: "system", content: system }, { role: "user", content: user }]
       };
       if (thinkHarderEnabled) body.reasoning = { effort: "max" };
@@ -3894,10 +4178,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     };
     if (/^gpt-5/i.test(resolvedModel)) {
       // GPT-5 chat models require max_completion_tokens and reject non-default temperature.
-      body.max_completion_tokens = MAXTOK;
+      body.max_completion_tokens = budget();
     } else {
       body.temperature = BASE_TEMP;
-      body.max_tokens = MAXTOK;
+      body.max_tokens = budget();
     }
     return withTimeout(
       fetch("https://api.openai.com/v1/chat/completions", {
@@ -3920,7 +4204,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent?key=" + encodeURIComponent(key);
     const body = {
       contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
-      generationConfig: { temperature: BASE_TEMP, maxOutputTokens: MAXTOK }
+      generationConfig: { temperature: BASE_TEMP, maxOutputTokens: budget() }
     };
     return withTimeout(
       fetch(url, {
@@ -3954,7 +4238,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         && supportsThinkHarder("openrouter", modelId);
       const body = {
         model: modelId,
-        max_tokens: thinkHarderEnabled ? 16384 : MAXTOK,
+        max_tokens: thinkHarderEnabled ? thinkingBudget() : budget(),
         messages: [{ role: "system", content: system }, { role: "user", content: user }]
       };
       if (modelId !== "openai/gpt-5.6-luna") body.temperature = BASE_TEMP;
@@ -4016,7 +4300,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const temperature = /^kimi-/i.test(modelId) ? 1 : BASE_TEMP;
     const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
       && supportsThinkHarder("opencode", selected);
-    const maxTokens = thinkHarderEnabled ? 16384 : MAXTOK;
+    const maxTokens = thinkHarderEnabled ? thinkingBudget() : budget();
     const body = protocol === "responses"
       ? {
           model: modelId || "deepseek-v4-flash",
@@ -4073,10 +4357,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       emptyRetries: EMPTY_RETRIES,
       validationRetries: VALIDATION_RETRIES,
       maxAttempts: MAX_UPSTREAM_ATTEMPTS,
-      callModel: async (messages) => {
+      callModel: async (messages, options) => {
         throwIfAborted(signal);
+        currentTokenScale = (options && options.tokenScale) || 1;
         const flat = serializeTranscript(messages);
-        logLine("Sending to " + providerName + " (" + (model || "default") + ").");
+        logLine("Sending to " + providerName + " (" + (model || "default") + ")"
+          + (currentTokenScale > 1 ? " with a larger token budget (" + budget() + ")." : "."));
         const raw = await callProvider(apiKey, model, flat.system, flat.user, signal);
         throwIfAborted(signal);
         return raw;

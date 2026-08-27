@@ -1,6 +1,6 @@
 {
   "name": "vibbit-extension",
-  "version": "0.2.3",
+  "version": "0.2.8",
   "private": true,
   "description": "Build tooling for the Vibbit Chrome extension",
   "scripts": {
@@ -14,6 +14,7 @@
     "test": "node --test",
     "dev:watch-reload": "node scripts/dev/watch-build-reload.mjs",
     "package": "npm run check:compat-core && npm run build:hosted && node scripts/package.mjs",
+    "release:patch": "npm version patch --no-git-tag-version && npm run package:neutral",
     "package:neutral": "npm run check:compat-core && npm run build && node scripts/package.mjs",
     "backend:start": "node apps/backend/src/server.mjs",
     "backend:dev": "node --watch apps/backend/src/server.mjs",

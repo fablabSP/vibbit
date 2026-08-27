@@ -62,16 +62,26 @@ function readConstString(source, name) {
 }
 
 async function build() {
-  const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
+  const [rawClient, rawManifest, frogSvgMarkup, rawPackage] = await Promise.all([
     readFile(sourcePath, "utf8"),
     readFile(manifestPath, "utf8"),
-    readFile(frogSvgPath, "utf8")
+    readFile(frogSvgPath, "utf8"),
+    readFile(path.join(root, "package.json"), "utf8")
   ]);
 
   let builtClient = rawClient.replace(userscriptHeaderPattern, "");
   const frogDataUri = svgToDataUri(frogSvgMarkup);
   builtClient = builtClient.replaceAll(frogDataUriToken, frogDataUri);
   const manifest = JSON.parse(rawManifest);
+
+  // package.json is the ONLY place a version is edited. The manifest and the
+  // in-panel badge both derive from it, so a bump can never go half-applied.
+  const pkgVersion = String(JSON.parse(rawPackage).version || "0.0.0").trim();
+  if (!/^\d+\.\d+\.\d+$/.test(pkgVersion)) {
+    throw new Error("package.json version must be X.Y.Z for a Chrome manifest, got: " + pkgVersion);
+  }
+  manifest.version = pkgVersion;
+  builtClient = overrideConst(builtClient, "VIBBIT_VERSION", pkgVersion);
 
   const buildProfile = String(process.env.VIBBIT_BUILD_PROFILE || "").trim().toLowerCase();
   const hostedManagedProfile = buildProfile === "hosted-managed";
@@ -144,6 +154,7 @@ async function build() {
   }
   if (effectiveBackend) {
     console.log(`- BACKEND: ${effectiveBackend}`);
+    console.log(`- version: ${pkgVersion}`);
     console.log(`- host_permissions: ${manifest.host_permissions.join(", ")}`);
   }
   if (!hostedManagedEnabled && appToken !== undefined) {

@@ -5,6 +5,7 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "buildUserPrompt",
   "extractCode",
   "parseModelOutput",
+  "salvageCodeFromPartialJson",
   "validateBlocksCompatibility",
   "buildTargetPromptExtras",
   "MICROBIT_EXTENSIONS",
@@ -239,6 +240,55 @@ export function extractCode(raw) {
   return sanitizeMakeCode(code);
 }
 
+// True when the model clearly TRIED to emit the JSON envelope. If parsing then
+// fails, the raw text is a broken envelope, not code, and must never be treated
+// as code -- pasting it drops {"feedback":[...] straight into the editor.
+function looksLikeEnvelopeAttempt(raw) {
+  const text = String(raw || "").trim();
+  if (!text.startsWith("{") && !/^```/.test(text)) return false;
+  return /"(?:feedback|code)"\s*:/.test(text);
+}
+
+// Recover the code string from an envelope that was cut off mid-flight, which is
+// what a max_tokens truncation looks like. Walks the JSON string manually and
+// honours escapes, so a partial value still yields usable code.
+export function salvageCodeFromPartialJson(raw) {
+  const text = String(raw || "");
+  const keyMatch = text.match(/"code"\s*:\s*"/);
+  if (!keyMatch) return "";
+  let out = "";
+  let escaped = false;
+  for (let i = keyMatch.index + keyMatch[0].length; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) {
+      if (char === "n") out += "\n";
+      else if (char === "t") out += "\t";
+      else if (char === "r") out += "";
+      else out += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") { escaped = true; continue; }
+    if (char === "\"") break;
+    out += char;
+  }
+  return out;
+}
+
+function salvageFeedbackFromPartialJson(raw) {
+  const text = String(raw || "");
+  const match = text.match(/"feedback"\s*:\s*\[([\s\S]*?)\]/);
+  if (!match) return [];
+  const items = match[1].match(/"(?:\\.|[^"\\])*"/g) || [];
+  return items.map((item) => {
+    try {
+      return JSON.parse(item);
+    } catch (error) {
+      return item.replace(/^"|"$/g, "");
+    }
+  });
+}
+
 export function parseModelOutput(raw) {
   const parsedObjects = parseJsonObjectsFromText(raw);
   for (const parsed of parsedObjects) {
@@ -251,6 +301,19 @@ export function parseModelOutput(raw) {
       code: extractCode(parsed.code == null ? "" : String(parsed.code))
     };
   }
+
+  if (looksLikeEnvelopeAttempt(raw)) {
+    // Broken envelope. Salvage the code field if we can; otherwise return empty
+    // so the generation loop retries instead of pasting JSON into the editor.
+    const salvaged = sanitizeMakeCode(salvageCodeFromPartialJson(raw));
+    return {
+      feedback: normaliseFeedback(salvageFeedbackFromPartialJson(raw)),
+      code: salvaged,
+      salvaged: Boolean(salvaged),
+      truncated: true
+    };
+  }
+
   return { feedback: [], code: extractCode(raw) };
 }
 
@@ -1295,6 +1358,11 @@ export function validateBlocksCompatibility(code, target) {
   }
 
   const violations = [];
+  // Belt and braces: if an unparsed envelope ever reaches the validator, fail
+  // loudly rather than letting it be pasted into the student's editor.
+  if (/^\s*\{\s*"(?:feedback|code)"\s*:/.test(String(code || ""))) {
+    return { ok: false, violations: ["raw JSON envelope leaked into code"], warnings: [], extensions: [] };
+  }
   for (const rule of rules) {
     if (typeof rule.test === "function") {
       if (rule.test(code)) violations.push(rule.why);
@@ -1391,6 +1459,19 @@ export function validateBlocksCompatibility(code, target) {
       } catch {
         // A warning heuristic must never take down validation.
       }
+    }
+  }
+
+  // A program missing its closing braces is a truncated generation, not a style
+  // problem. Catching it here means the loop retries instead of pasting a
+  // half-written handler into the student's editor.
+  const delimiterPairs = [["{", "}"], ["(", ")"], ["[", "]"]];
+  for (const [open, close] of delimiterPairs) {
+    const opens = (codeView.match(new RegExp("\\" + open, "g")) || []).length;
+    const closes = (codeView.match(new RegExp("\\" + close, "g")) || []).length;
+    if (opens !== closes) {
+      violations.push("unbalanced " + open + close + " (code looks cut off)");
+      break;
     }
   }
 
@@ -1579,12 +1660,16 @@ export async function runGenerationLoop({
   initialUserPrompt,
   emptyRetries = 0,
   validationRetries = 0,
+  truncationRetries = 1,
   maxAttempts = 1,
   callModel,
   runDecompile
 } = {}) {
   const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
   let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
+  let truncationLeft = Math.max(0, Math.trunc(Number(truncationRetries) || 0));
+  // Escalating budget: a reply cut off mid-JSON needs more room, not a reword.
+  let tokenScale = 1;
   let validationLeft = Math.max(0, Math.trunc(Number(validationRetries) || 0));
   let validationRetried = false;
 
@@ -1596,7 +1681,7 @@ export async function runGenerationLoop({
   let last = null;
 
   while (attempts.length < attemptLimit) {
-    const raw = await callModel(messages);
+    const raw = await callModel(messages, { tokenScale });
     const parsed = parseModelOutput(raw);
     const code = sanitizeMakeCode(parsed.code);
     const validation = runValidateBlocks(code, target);
@@ -1604,6 +1689,10 @@ export async function runGenerationLoop({
     let reason = !String(code || "").trim()
       ? "empty"
       : (validation.ok ? "ok" : "invalid");
+    // A salvaged-but-truncated reply may still pass the static validator while
+    // being missing its final braces. Treat truncation as its own failure so we
+    // retry with a bigger budget rather than pasting a half program.
+    if (parsed.truncated && reason !== "invalid") reason = "truncated";
     let decompile = null;
     if (reason === "ok" && typeof runDecompile === "function") {
       try {
@@ -1620,12 +1709,21 @@ export async function runGenerationLoop({
       feedback: parsed.feedback,
       validation,
       reason,
-      decompile
+      decompile,
+      truncated: Boolean(parsed.truncated)
     };
     attempts.push(last);
 
     if (reason === "ok") break;
     if (attempts.length >= attemptLimit) break;
+
+    if (reason === "truncated" && truncationLeft > 0) {
+      truncationLeft -= 1;
+      tokenScale *= 3;
+      // Same messages, bigger budget. Rewording would not help; the model ran
+      // out of room, it did not misunderstand.
+      continue;
+    }
 
     if (reason === "empty" && emptyLeft > 0) {
       emptyLeft -= 1;
