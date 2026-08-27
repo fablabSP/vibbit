@@ -46,7 +46,8 @@ test("dependency fragment uses registry package ids", () => {
 test("third-party packages are pinned, never tracking a branch", () => {
   for (const entry of Object.values(MICROBIT_EXTENSIONS)) {
     if (!entry.pkg.startsWith("github:")) continue;
-    assert.match(entry.pkg, /#v?\d/, `${entry.id} must pin a tag`);
+    // A tag (#v1.2.3) or a full commit SHA both count as pinned.
+    assert.match(entry.pkg, /#(?:v?\d|[0-9a-f]{40})/, `${entry.id} must pin a tag or commit`);
   }
 });
 
@@ -248,4 +249,24 @@ test("a missing-capability report retries with the full extension catalogue", as
   assert.equal(calls, 2);
   assert.equal(retrySawKeyboardApi, true, "retry must carry the extension APIs");
   assert.match(result.code, /keyboard\.startKeyboardService/);
+});
+
+/* ── NFC / RFID ───────────────────────────────────────────── */
+
+test("NFC is reached by both nfc and rfid keywords", () => {
+  assert.deepEqual(detectRequiredExtensions("", "read an RFID card"), ["nfc"]);
+  assert.deepEqual(detectRequiredExtensions("", "scan a tag with NFC"), ["nfc"]);
+  assert.deepEqual(detectRequiredExtensions("if (NFC.getCard()) { }"), ["nfc"]);
+});
+
+test("NFC dependency uses the package's own name, not our internal id", () => {
+  const deps = extensionDependencies(["nfc"]);
+  assert.ok(deps.NFC, "pxt.json declares the package as NFC");
+  assert.match(deps.NFC, /^github:DFRobot\/pxt-NFCUART#[0-9a-f]{40}$/);
+});
+
+test("NFC arities match the real extension signatures", () => {
+  assert.equal(runValidateBlocks("basic.showString(NFC.getUID())", "microbit").ok, true);
+  const bad = runValidateBlocks("NFC.writeData(1, 2)", "microbit");
+  assert.ok(bad.violations.some((v) => /NFC\.writeData arity/.test(v)));
 });

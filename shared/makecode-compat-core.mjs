@@ -935,6 +935,56 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
       "})"
     ].join("\n")
   },
+  nfc: {
+    id: "nfc",
+    label: "NFC / RFID (DFRobot PN532)",
+    // pxt.json declares the package name as "NFC", so the dependency key must
+    // match that, not the lowercase id we use internally.
+    // No tags exist on this repo, so pin the commit instead. Unpinned
+    // github: dependencies can change under a class mid-workshop.
+    pkg: "github:DFRobot/pxt-NFCUART#fe3ccbe03d5ef804b39d3959c11186cee2c48efb",
+    pkgName: "NFC",
+    docs: "https://github.com/DFRobot/pxt-NFCUART",
+    detect: /\bNFC\s*\./,
+    intent: /\b(nfc|rfid|pn532|tag reader|card reader|read a? ?card|scan a? ?(card|tag)|access card|ez-?link)\b/i,
+    apis: [
+      "NFC.getCard() -> boolean (true when a card is present)",
+      "NFC.getUID() -> string (the card's unique ID)",
+      "NFC.checkUID(str: string) -> boolean (true when the present card matches str)",
+      "NFC.nfcEvent(handler) - runs the handler when a card is detected",
+      "NFC.readNFCData(num: number) -> string (all data in a block)",
+      "NFC.readNFCDataOne(blockNum: number, byteNum: number) -> number",
+      "NFC.writeData(blockNum: number, index: number, data: number)",
+      "NFC.blockList(blockNum?: DataBlockList) -> number",
+      "NFC.nfcDataList(dataNum?: byteNumList) -> number"
+    ],
+    enums: {},
+    signatures: [
+      { call: "NFC.getCard", minArgs: 0, maxArgs: 0 },
+      { call: "NFC.getUID", minArgs: 0, maxArgs: 0 },
+      { call: "NFC.checkUID", minArgs: 1, maxArgs: 1 },
+      { call: "NFC.nfcEvent", minArgs: 1, maxArgs: 1 },
+      { call: "NFC.readNFCData", minArgs: 1, maxArgs: 1 },
+      { call: "NFC.readNFCDataOne", minArgs: 2, maxArgs: 2 },
+      { call: "NFC.writeData", minArgs: 3, maxArgs: 3 }
+    ],
+    rules: [
+      "The namespace is capitalised: write NFC.getCard(), never nfc.getCard().",
+      "Guard reads with NFC.getCard() before calling NFC.getUID(), otherwise you read an empty string.",
+      "Compare cards with NFC.checkUID(\"...\") or by storing NFC.getUID() in a variable; do not compare against a number.",
+      "This needs the DFRobot NFC expansion board wired over I2C, not just a bare micro:bit.",
+      "Poll inside basic.forever with a pause of at least 200 ms, or use NFC.nfcEvent for a card-detected handler."
+    ],
+    example: [
+      "basic.forever(function () {",
+      "    if (NFC.getCard()) {",
+      "        basic.showString(NFC.getUID())",
+      "        basic.pause(1000)",
+      "    }",
+      "    basic.pause(200)",
+      "})"
+    ].join("\n")
+  },
   sonar: {
     id: "sonar",
     label: "Sonar (HC-SR04)",
@@ -1097,7 +1147,9 @@ export function extensionDependencies(ids) {
   const deps = {};
   for (const id of ids || []) {
     const entry = MICROBIT_EXTENSIONS[id];
-    if (entry) deps[entry.id] = entry.pkg === entry.id ? "*" : entry.pkg;
+    if (!entry) continue;
+    const key = entry.pkgName || entry.id;
+    deps[key] = entry.pkg === entry.id ? "*" : entry.pkg;
   }
   return deps;
 }

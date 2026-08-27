@@ -1,265 +1,294 @@
-# Vibbit for MakeCode
+# Vibbit
 
-This repo ships one Vibbit runtime supporting both:
+Describe what you want in plain English, and Vibbit writes the MakeCode blocks
+for your BBC micro:bit.
 
-- `Managed` mode (school server with server-side API keys)
-- `BYOK` mode (student/teacher brings their own key in the panel)
+It runs inside the MakeCode editor as a Chrome extension. You type something
+like *"show a heart when I press button A"*, and Vibbit generates the code,
+checks it converts cleanly to blocks, and pastes it into your project.
 
-## Managed classroom flow
+> Fork of [tinkertanker/vibbit](https://github.com/tinkertanker/vibbit), with
+> extension support, editor detection, and classroom features added.
 
-1. Teacher runs or deploys the backend (`apps/backend/`).
-2. Teacher opens `/teacher`, signs in (Google or local/dev login), and saves an OpenAI-compatible API base URL + key.
-3. Teacher creates a classroom and shares the 10-letter code (shown as `ABCDE-FGHIJ`, optionally via `/join/CODE`).
-4. Students open Vibbit in MakeCode and enter the classroom code. The production package (`npm run package`) is code-only against `https://vibbit.tk.sg`; ordinary `npm run build` keeps Managed + BYOK.
-5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
-6. Provider keys stay on the server (per classroom). Optional operator panel: `/admin?admin=<ADMINTOKEN>`.
+---
 
-## Supported keys and endpoints
+## Contents
 
-### Managed mode
+- [What you need](#what-you-need)
+- [Get a free Google API key](#get-a-free-google-api-key)
+- [Install Vibbit](#install-vibbit)
+- [Your first prompt](#your-first-prompt)
+- [Writing good prompts](#writing-good-prompts)
+- [Using extensions](#using-extensions)
+- [Watching your daily limit](#watching-your-daily-limit)
+- [Troubleshooting](#troubleshooting)
+- [For teachers](#for-teachers)
+- [For developers](#for-developers)
 
-- Endpoint used by the extension:
-  - `POST {BACKEND}/vibbit/generate`
-- Session bootstrap endpoint:
-  - `POST {BACKEND}/vibbit/connect`
-- Teacher / admin endpoints:
-  - `GET {BACKEND}/` (informational landing page)
-  - `GET {BACKEND}/teacher` (teacher login + mint classroom codes)
-  - `GET {BACKEND}/admin`
-  - `GET {BACKEND}/admin/status`
-  - `GET {BACKEND}/download/vibbit-extension.zip`
-  - `GET {BACKEND}/bookmarklet`
-  - `GET {BACKEND}/bookmarklet/runtime.js`
-- Teacher classrooms accept OpenAI, OpenRouter, OpenCode, Gemini, or a custom OpenAI-compatible base URL (LiteLLM / Claude-compatible proxies). Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`; localhost/private gateways need self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`. The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
-- Request payload supports:
-  - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
-  - optional managed overrides: `provider`, `model`
+---
 
-### BYOK mode
+## What you need
 
-- OpenAI key -> `https://api.openai.com/v1/responses` for GPT-5.6 Luna; older presets use `/v1/chat/completions`
-- Gemini key -> `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
-- OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
-- OpenCode key -> OpenCode Go or Zen (`https://opencode.ai/zen/go/v1` or `https://opencode.ai/zen/v1`)
+- **Google Chrome** (or Edge). Vibbit is a Chrome extension.
+- **A free Google account**, for the API key.
+- **A micro:bit**, if you want to run the code on real hardware. The MakeCode
+  simulator works fine without one.
 
-## Files
+---
 
-- `work.js`: primary runtime source (extension + bookmarklet)
-- `dist/`: built extension output
-- `artifacts/vibbit-extension.zip`: packaged extension
-- `apps/backend/`: managed backend (classroom auth + provider proxy)
+## Get a free Google API key
 
-## Block compatibility guardrails
+An API key is a password that lets Vibbit talk to Google's AI. It's free, takes
+about two minutes, and does **not** need a credit card.
 
-- Prompts for `micro:bit` prefer built-in icons (`basic.showIcon(IconNames.*)`) using canonical names from `pxt-microbit/libs/core/icons.ts` (for example `IconNames.Duck`).
-- Runtime validation checks known enum members from `pxt-microbit` core enums (for example `Button`, `Gesture`, `TouchPin`, `DigitalPin`).
-- Runtime validation checks argument counts for core block APIs (derived from `//% blockId` signatures) before accepting model output.
-- Prompt guidance includes `blocks-test` style example shapes to bias towards code that decompiles cleanly to Blocks.
+**1. Open Google AI Studio**
 
-## Build extension
+Go to <https://aistudio.google.com/apikey> and sign in with your Google account.
 
-```bash
-npm run build
-```
+**2. Create the key**
 
-Outputs:
+Click **Create API key**. If it asks you to pick a project, choose the default
+one it offers.
 
-- `dist/content-script.js`
-- `dist/manifest.json`
+**3. Copy it**
 
-Build-time backend overrides:
+You'll get a long string starting with `AIza...`. Click the copy button.
 
-```bash
-VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" npm run build
-```
+**4. Keep it private**
 
-## Distribute extension (website + GitHub)
+Treat it like a password:
 
-Extension packaging is built into the repo:
+- Don't post it in a group chat, a shared doc, or on GitHub.
+- Don't paste it into a screenshot.
+- If you think someone else has seen it, go back to AI Studio and delete it,
+  then make a new one.
 
-```bash
-npm run package
-```
+If you lose it, you can't view it again. Just create a new one.
 
-Output:
+### What "free" actually means
 
-- `artifacts/vibbit-extension.zip`
+The free tier has **no expiry and no credit card**, but it does have daily
+limits on how many requests you can make. Vibbit shows you a counter so you can
+see where you stand — see [Watching your daily limit](#watching-your-daily-limit).
 
-Website download route:
+One more thing worth knowing: on the free tier, Google may use what you send to
+improve their models. Don't paste anything private or personal into Vibbit.
 
-- `GET {BACKEND}/download/vibbit-extension.zip`
+Google changes these limits from time to time. The current figures for your own
+key are in [AI Studio](https://aistudio.google.com/).
 
-By default, that backend route redirects to the latest GitHub release asset:
+---
 
-- `https://github.com/tinkertanker/vibbit/releases/latest/download/vibbit-extension.zip`
+## Install Vibbit
 
-To ship a new downloadable version on GitHub:
+Vibbit isn't on the Chrome Web Store yet, so you install it manually. It's not
+hard.
 
-1. Push a release tag (for example `v0.2.1`).
-2. GitHub Actions workflow `.github/workflows/release-extension.yml` builds and packages the extension.
-3. The workflow publishes release assets:
-   - `vibbit-extension.zip` (stable filename for latest download URL)
-   - `vibbit-extension-<tag>.zip` (versioned copy)
-   - matching `.sha256` checksum files
+**1. Get the extension files**
 
-Optional backend override:
+Download `vibbit-extension.zip` from the
+[Releases page](https://github.com/lg2113/vibbit/releases), then unzip it.
+You should end up with a folder containing `manifest.json`.
 
-- Set `VIBBIT_EXTENSION_DOWNLOAD_URL` to any custom hosted zip URL if you do not want to use GitHub release assets.
+**2. Open Chrome's extensions page**
 
-## Build bookmarklet distribution
+Type `chrome://extensions` in the address bar and press Enter.
 
-For users who cannot install the Chrome extension, build bookmarklet artefacts:
+**3. Turn on Developer mode**
 
-```bash
-npm run build:bookmarklet
-```
+The toggle is in the top-right corner.
 
-Default output includes both managed and BYOK bookmarklets (matching the extension):
+**4. Load it**
 
-- `artifacts/bookmarklet/vibbit-runtime.js`
-- `artifacts/bookmarklet/bookmarklet-managed.txt`
-- `artifacts/bookmarklet/install-managed.html`
-- `artifacts/bookmarklet/bookmarklet-byok.txt`
-- `artifacts/bookmarklet/install-byok.html`
+Click **Load unpacked**, then select the unzipped folder.
 
-To emit managed-only output:
+Vibbit should now appear in your extensions list.
 
-```bash
-VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet
-```
+**5. Add your key**
 
-Set the hosted runtime URL used inside the bookmarklet link:
+Open a MakeCode project, click the Vibbit button, then the gear icon. Choose
+**Gemini** as the provider and paste your API key.
 
-```bash
-VIBBIT_BOOKMARKLET_RUNTIME_URL="https://cdn.example.com/vibbit-runtime.js" npm run build:bookmarklet
-```
+---
 
-Deploy `artifacts/bookmarklet/vibbit-runtime.js` to that URL, then distribute the generated bookmarklet text or install HTML.
+## Your first prompt
 
-## Backend-hosted bookmarklet (Railway-friendly)
+**1. Open a project, not the home page.** Go to
+<https://makecode.microbit.org> and open or create a project. Vibbit needs the
+editor, not the project list.
 
-The managed backend can host bookmarklet assets directly, so you can avoid a separate static hosting step:
+**2. Check the pill.** Top of the Vibbit panel, next to the version number:
 
-- Installer page: `GET {BACKEND}/bookmarklet`
-- Runtime script: `GET {BACKEND}/bookmarklet/runtime.js`
+| Pill | Meaning |
+|---|---|
+| 🟢 Editor connected | Ready to go |
+| 🟡 Editor loading | Click the pill, or open the JavaScript tab |
+| 🔴 No project open | You're on the home page — open a project |
 
-After deploying the backend, share `{BACKEND}/bookmarklet` with students who cannot install extensions.
+**3. Try a starter.** Click one of the chips (Beating heart animation, Random
+dice, Rock paper scissors...). It fills the box so you can see what a good
+prompt looks like. Change anything you like, then hit **Send**.
 
-## Release runbook
+**4. Watch it work.** Vibbit generates the code, checks it converts to blocks
+without errors, retries if something's wrong, then pastes it in.
 
-For coordinated extension, bookmarklet, and backend/site releases, use:
+---
 
-- `docs/release.md`
+## Writing good prompts
 
-## Shared compat core
+Vibbit works best when you're specific. Compare:
 
-`work.js` (BYOK runtime) and `apps/backend/src/runtime.mjs` (managed runtime) share generated compat helpers from:
+| Vague | Specific |
+|---|---|
+| "make a game" | "when I shake it, show a random number from 1 to 6" |
+| "use the LEDs" | "light up 8 NeoPixels on pin P1 in rainbow colours" |
+| "detect something" | "show a skull when the ultrasonic sensor reads under 10 cm" |
 
-- `shared/makecode-compat-core.mjs`
+Things worth including:
 
-Sync/check commands:
+- **Which pin** your hardware is on (P0, P1, P2...)
+- **How many** of something (8 LEDs, 6 dice faces)
+- **What triggers it** (button A, shake, a card being scanned)
+- **What should happen** (show a number, play a tone, move a servo)
 
-- `npm run sync:compat-core` updates the generated block in `work.js`
-- `npm run check:compat-core` fails if the generated block is stale
+Say the whole idea in one message. Two half-prompts cost twice as many requests
+as one complete prompt.
 
-## Run backend locally (teacher laptop)
+---
 
-```bash
-cp apps/backend/.env.example apps/backend/.env
-npm run backend:start
-```
+## Using extensions
 
-Default local URL:
+Some hardware needs an **extension** — an add-on library — before the code will
+run. Vibbit knows about these:
 
-- `http://localhost:8787`
+| Hardware | Extension | Say something like |
+|---|---|---|
+| NeoPixel / LED strip | `neopixel` | "rainbow on 8 neopixels on P1" |
+| Ultrasonic distance | `sonar` | "measure distance with the ultrasonic sensor" |
+| Bluetooth keyboard/mouse | `blehid` | "send a keypress to my computer over bluetooth" |
+| NFC / RFID cards | `NFC` | "read an RFID card and show the UID" |
+| Servo motor | *(built in)* | "move a servo on P1 to 90 degrees" |
 
-On start, backend logs the classroom share line and admin path. Supply `VIBBIT_ADMIN_TOKEN` through the environment; the token is not printed.
+**Add the extension before you prompt.** In MakeCode: gear icon →
+**Extensions** → search the name → click it.
 
-If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and configure them in the Provider Setup form.
+Vibbit shows an amber banner above the input box when your prompt needs an
+extension you haven't added yet.
 
-## Deploy backend (monorepo)
+### Bluetooth HID needs two extra steps
 
-Supported hosted deployment target:
+- It only works on **micro:bit V2**.
+- You must set **Project Settings → No Pairing Required** before your computer
+  can connect.
 
-- Railway
+### NFC needs the expansion board
 
-Deploy button (placeholder until template is published):
+The NFC blocks talk to a DFRobot PN532 module over I2C. A bare micro:bit won't
+do anything on its own.
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/REPLACE_WITH_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=vibbit)
+---
 
-See full backend setup and env docs here:
+## Watching your daily limit
 
-- `apps/backend/README.md`
+The header shows **"N left today"** next to the version number. Hover it for a
+breakdown.
 
-Recommended teacher flow:
+It counts **requests**, not prompts. One prompt can cost several requests if
+Vibbit has to retry — so 5 prompts might use 8 requests.
 
-1. Open [Railway New Project](https://railway.com/new) and deploy from GitHub.
-2. Set service root directory to `apps/backend`.
-3. Add required env vars from `apps/backend/.env.example`.
-4. Generate a public domain, mint a classroom code, and share the code (hosted extension students need only the code).
+When you drop below 30% remaining, a banner appears with tips for stretching
+what's left. The main ones:
 
-Cheapest hosted option:
+- **One complete prompt beats two vague ones.** Say the pin, the numbers, and
+  the trigger up front.
+- **Edit blocks by hand for small changes.** Changing a colour or a delay in
+  the editor costs nothing.
+- **Draft your prompt in a free chatbot first.** Ask Gemini, ChatGPT, or
+  Copilot something like *"rewrite this into one clear instruction for a
+  micro:bit block coding assistant, including the pin and the trigger"*, then
+  paste the polished version into Vibbit. Those chatbots are free and don't
+  touch your API quota.
+- **Read your prompt once before sending.** A failed generation costs the same
+  as a good one.
 
-- Use one Railway backend service only, attach a volume, and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
-- Set Railway hard usage limit to `$1`.
+The counter is a guide, not the real limit — the actual quota lives with
+Google. It's per-browser and resets daily.
 
-## Install extension in Chrome (unpacked)
-
-Vibbit is not on the Chrome Web Store yet. Install it as an unpacked extension:
-
-- Download the latest zip from `https://vibbit.tk.sg/download/vibbit-extension.zip`, or
-- Build locally with `npm run build` and use `dist/`.
-
-Then:
-
-1. If you downloaded the zip, unzip it first.
-2. Open `chrome://extensions`.
-3. Enable **Developer mode**.
-4. Click **Load unpacked**.
-5. Select the unzipped folder (or `dist/` for local builds) containing `manifest.json`.
-6. For updates, rebuild/re-download and click **Reload** on the extension card.
-
-## Browser-test checklist
-
-1. Build/package:
-   - `npm run package`
-2. Confirm artefacts:
-   - `dist/content-script.js`
-   - `dist/manifest.json`
-   - `artifacts/vibbit-extension.zip`
-3. Managed checks after `npm run package` (hosted/code-only):
-   - enter classroom code only (server URL hidden; baked `https://vibbit.tk.sg`)
-   - generate and verify paste + `Revert`
-   - test error-aware flow (empty prompt + page errors)
-   - trigger conversion modal and verify retry + `Fix convert error`
-4. BYOK checks after `npm run build` (neutral dual-mode):
-   - mode toggle, provider + model + key
-   - generation, paste, and error-context fixing
-5. Reload extension and refresh MakeCode tabs after each build
-
-## Playwright audits
-
-- `npm run audit:smoke` -> deterministic UI smoke + screenshots
-- `npm run audit:live` -> optional managed/BYOK live verification
-- `npm run audit:install` -> install Chromium
-
-Audit output:
-
-- `output/playwright/audits/`
+---
 
 ## Troubleshooting
 
-- `Invalid class code`: confirm teacher shared the current code from backend logs/env.
-- `Request failed: Unauthorized`: check class code/session, or `APP_TOKEN`/`SERVER_APP_TOKEN` if using legacy token mode.
-- `No code returned`: try a clearer prompt or switch model.
-- `Monaco not found`: open an actual MakeCode project first.
-- `CORS/network errors`: check `VIBBIT_ALLOW_ORIGIN`, deployment env vars, and provider API key configuration.
+**"No project open"** — You're on the MakeCode home page. Open a project.
+
+**"Editor loading" won't go green** — Click the pill. If it stays amber, click
+the **JavaScript** tab at the top of MakeCode, then try again.
+
+**"The AI service is busy"** — Google's servers are full. Vibbit retries
+automatically. If it gives up, wait a minute.
+
+**"The AI service is rate limited"** — You've hit your daily or per-minute
+limit. Check the counter in the header. Daily limits reset at midnight Pacific
+time.
+
+**"That API key was rejected"** — Check for a stray space when you pasted it,
+or make a new key in AI Studio.
+
+**The code has red squiggles** — Usually a missing extension. Check the amber
+banner, and add the extension in MakeCode.
+
+**Nothing happens when I click the Vibbit button** — Reload the extension at
+`chrome://extensions`, then refresh your MakeCode tab.
+
+**Wrong version showing** — The version number in the header tells you which
+build is loaded. If it's older than expected, you're running a stale copy.
+Re-download and reload.
+
+---
+
+## For teachers
+
+**Use Managed mode for a class.** One API key lives on your server, students
+enter a classroom code. Nobody handles keys, nobody sees yours. Setup is in the
+[developer guide](docs/development.md).
+
+**Free tier will not survive 20 simultaneous students.** When a whole class
+sends at once, you'll exceed the per-minute limit immediately. Vibbit spreads
+the burst out and retries, which helps, but a paid key is what actually solves
+it. The cost is cents per lesson — set a spend cap and it's bounded.
+
+**Pre-load a starter project.** Make one MakeCode project with the extensions
+your lesson needs already added, and share that link. Saves ten minutes of
+setup and a lot of confusion.
+
+**Budget on requests, not prompts.** With retries, assume roughly 1.5 to 2
+requests per student prompt.
+
+---
+
+## For developers
+
+Build instructions, backend deployment, the shared compat core, and the release
+process are in **[docs/development.md](docs/development.md)**.
+
+Quick start:
+
+```bash
+npm install
+npm test
+npm run release:patch    # bumps version and packages the extension
+```
+
+Editing rule: `work.js` contains a **generated** copy of
+`shared/makecode-compat-core.mjs` between the `BEGIN_SHARED_COMPAT_CORE` and
+`END_SHARED_COMPAT_CORE` markers. Never edit that block by hand — edit
+`shared/`, then run `npm run sync:compat-core`.
+
+---
 
 ## Credits
 
-Kickstarted during work attachment by:
+Originally created by [Atharv Pandit](https://github.com/Avi123-codes) and
+[Josiah Menon](https://github.com/OsiahMelon), Raffles Institution, 2025.
+Maintained upstream by [Tinkertanker](https://github.com/tinkertanker).
 
-- [Atharv Pandit](https://github.com/Avi123-codes)
-- [Josiah Menon](https://github.com/OsiahMelon)
-
-Raffles Institution Year 4 (2025).
+Licensed under the terms of the upstream repository.

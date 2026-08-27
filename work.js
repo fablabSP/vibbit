@@ -292,6 +292,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     /* chat messages area */
     + '<div id="chat-messages" style="flex:1;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;padding:20px 18px"></div>'
 
+    /* low-quota advice banner */
+    + '<div id="quota-banner" style="display:none;flex-shrink:0;margin:0 16px 10px;padding:10px 12px;border-radius:10px;border:1px solid #3d2f16;background:#1c1608;color:#e3c07b;font-size:12px;line-height:1.5"></div>'
+
     /* missing-extension banner */
     + '<div id="ext-banner" style="display:none;flex-shrink:0;margin:0 16px 10px;padding:10px 12px;border-radius:10px;border:1px solid #3d2f16;background:#1c1608;color:#e3c07b;font-size:12px;line-height:1.5"></div>'
 
@@ -1096,6 +1099,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     { label: "Two-player radio chat", prompt: "use radio on group 1 so pressing A sends a smiley to the other micro:bit and pressing B sends a sad face" },
     { label: "Rainbow LED strip", prompt: "make a rainbow on a neopixel strip of 8 LEDs connected to pin P1", needs: "neopixel" },
     { label: "Distance alarm", prompt: "use an ultrasonic sensor on P1 and P2, and show a skull icon when something is closer than 10 cm", needs: "sonar" },
+    { label: "NFC card reader", prompt: "when an NFC card is scanned, show the card UID on the LED screen", needs: "nfc" },
     { label: "Servo gate", prompt: "when I press button A move a servo on pin P1 to 90 degrees, and when I press B move it back to 0", needs: "servo" }
   ];
 
@@ -3292,6 +3296,56 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           "})"
         ].join("\n")
       },
+      nfc: {
+        id: "nfc",
+        label: "NFC / RFID (DFRobot PN532)",
+        // pxt.json declares the package name as "NFC", so the dependency key must
+        // match that, not the lowercase id we use internally.
+        // No tags exist on this repo, so pin the commit instead. Unpinned
+        // github: dependencies can change under a class mid-workshop.
+        pkg: "github:DFRobot/pxt-NFCUART#fe3ccbe03d5ef804b39d3959c11186cee2c48efb",
+        pkgName: "NFC",
+        docs: "https://github.com/DFRobot/pxt-NFCUART",
+        detect: /\bNFC\s*\./,
+        intent: /\b(nfc|rfid|pn532|tag reader|card reader|read a? ?card|scan a? ?(card|tag)|access card|ez-?link)\b/i,
+        apis: [
+          "NFC.getCard() -> boolean (true when a card is present)",
+          "NFC.getUID() -> string (the card's unique ID)",
+          "NFC.checkUID(str: string) -> boolean (true when the present card matches str)",
+          "NFC.nfcEvent(handler) - runs the handler when a card is detected",
+          "NFC.readNFCData(num: number) -> string (all data in a block)",
+          "NFC.readNFCDataOne(blockNum: number, byteNum: number) -> number",
+          "NFC.writeData(blockNum: number, index: number, data: number)",
+          "NFC.blockList(blockNum?: DataBlockList) -> number",
+          "NFC.nfcDataList(dataNum?: byteNumList) -> number"
+        ],
+        enums: {},
+        signatures: [
+          { call: "NFC.getCard", minArgs: 0, maxArgs: 0 },
+          { call: "NFC.getUID", minArgs: 0, maxArgs: 0 },
+          { call: "NFC.checkUID", minArgs: 1, maxArgs: 1 },
+          { call: "NFC.nfcEvent", minArgs: 1, maxArgs: 1 },
+          { call: "NFC.readNFCData", minArgs: 1, maxArgs: 1 },
+          { call: "NFC.readNFCDataOne", minArgs: 2, maxArgs: 2 },
+          { call: "NFC.writeData", minArgs: 3, maxArgs: 3 }
+        ],
+        rules: [
+          "The namespace is capitalised: write NFC.getCard(), never nfc.getCard().",
+          "Guard reads with NFC.getCard() before calling NFC.getUID(), otherwise you read an empty string.",
+          "Compare cards with NFC.checkUID(\"...\") or by storing NFC.getUID() in a variable; do not compare against a number.",
+          "This needs the DFRobot NFC expansion board wired over I2C, not just a bare micro:bit.",
+          "Poll inside basic.forever with a pause of at least 200 ms, or use NFC.nfcEvent for a card-detected handler."
+        ],
+        example: [
+          "basic.forever(function () {",
+          "    if (NFC.getCard()) {",
+          "        basic.showString(NFC.getUID())",
+          "        basic.pause(1000)",
+          "    }",
+          "    basic.pause(200)",
+          "})"
+        ].join("\n")
+      },
       sonar: {
         id: "sonar",
         label: "Sonar (HC-SR04)",
@@ -3454,7 +3508,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       const deps = {};
       for (const id of ids || []) {
         const entry = MICROBIT_EXTENSIONS[id];
-        if (entry) deps[entry.id] = entry.pkg === entry.id ? "*" : entry.pkg;
+        if (!entry) continue;
+        const key = entry.pkgName || entry.id;
+        deps[key] = entry.pkg === entry.id ? "*" : entry.pkg;
       }
       return deps;
     }
@@ -4309,6 +4365,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
       throwIfAborted(signal);
       try {
+        // Counted here, not at the call site: every retry is a real request
+        // against the provider's quota, and retries are exactly what burn it.
+        bumpUsage("requests");
         return await fn();
       } catch (error) {
         if (isAbortError(error)) throw error;
@@ -4364,6 +4423,44 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     renderUsage();
   };
 
+  /* Advice shown when the daily budget runs low. The aim is to change behaviour
+     while there is still budget left to change, not to scold at zero. */
+  const QUOTA_TIPS = [
+    "Write the whole idea in ONE prompt. Two half-prompts cost two requests.",
+    "Say the pin, the numbers and the button up front, e.g. \"8 LEDs on P1, button A\".",
+    "Edit the blocks by hand for small tweaks. Colour and timing changes are faster than re-prompting.",
+    "Draft and sharpen your prompt in a free chatbot (Gemini, ChatGPT, Copilot), then paste the finished one here.",
+    "A failed generation still costs a request, so read the prompt once before sending."
+  ];
+
+  const quotaBannerEl = () => document.getElementById("quota-banner");
+
+  const renderQuotaBanner = () => {
+    const el = quotaBannerEl();
+    if (!el) return;
+    if (!DAILY_REQUEST_BUDGET) { el.style.display = "none"; return; }
+    const usage = readUsage();
+    const left = Math.max(0, DAILY_REQUEST_BUDGET - usage.requests);
+    const ratio = usage.requests / DAILY_REQUEST_BUDGET;
+    if (ratio < 0.7) { el.style.display = "none"; return; }
+
+    const spent = usage.prompts > 0
+      ? " So far " + usage.prompts + " prompt(s) have used " + usage.requests + " request(s)."
+      : "";
+    const headline = left === 0
+      ? "<strong>Daily request budget used up.</strong> The AI service may start refusing requests."
+      : "<strong>Only " + left + " request(s) left today.</strong> Time to be economical." + spent;
+
+    el.innerHTML = headline
+      + '<ul style="margin:7px 0 0;padding-left:18px">'
+      + QUOTA_TIPS.map((tip) => "<li style=\"margin:3px 0\">" + escapeHTML(tip) + "</li>").join("")
+      + "</ul>";
+    el.style.borderColor = left === 0 ? "#5b2626" : "#3d2f16";
+    el.style.background = left === 0 ? "#1d0f0f" : "#1c1608";
+    el.style.color = left === 0 ? "#f0a3a3" : "#e3c07b";
+    el.style.display = "";
+  };
+
   const renderUsage = () => {
     const el = document.getElementById("vibbit-usage");
     if (!el) return;
@@ -4376,6 +4473,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     el.title = usage.prompts + " prompt(s) today used " + usage.requests
       + " AI request(s). Retries cost extra requests. This is a guide, not the provider's real limit.";
     el.style.color = ratio >= 1 ? "#f85149" : (ratio > 0.8 ? "#d29922" : "#4a5f82");
+    renderQuotaBanner();
   };
 
   let BASE_TEMP = 0.1;
@@ -4665,7 +4763,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (CLASS_JITTER_MS > 0 && currentTokenScale === 1) {
           await waitWithAbort(classJitter(), signal);
         }
-        bumpUsage("requests");
         const raw = await withTransientRetry(
           () => callProvider(apiKey, model, flat.system, flat.user, signal),
           signal

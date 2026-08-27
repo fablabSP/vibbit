@@ -20,3 +20,7 @@ docker-compose.yml
 
 # Amp orb portal metadata
 .amp/portals/*
+vibbit-dist.zip
+*.patch
+vibbit-dist.zip
+*.patch
