@@ -5,6 +5,7 @@ import {
   MICROBIT_EXTENSIONS,
   buildExtensionPromptExtras,
   buildSocraticPrompt,
+  classifyFollowUpRequest,
   parseSocraticOutput,
   buildSystemPrompt,
   detectMissingCapability,
@@ -352,4 +353,50 @@ test("malformed or empty Socratic output never throws, just yields no questions"
 
 test("a request that needs no prediction question can return an empty list", () => {
   assert.deepEqual(parseSocraticOutput('{"questions":[]}').questions, []);
+});
+
+test("Socratic prompt forbids impossible scenarios and hallucinated technical claims", () => {
+  const prompt = buildSocraticPrompt("microbit", "roll a dice from 1 to 6");
+  assert.match(prompt, /structurally impossible/);
+  assert.match(prompt, /cannot actually produce/i);
+  assert.match(prompt, /not invent plausible-sounding technical detail/i);
+  assert.match(prompt, /Math\.random\(min, max\)/);
+});
+
+/* ── Follow-up request classification ─────────────────────────────────── */
+
+test("regenerate/redo phrasing is classified as regenerate", () => {
+  assert.equal(classifyFollowUpRequest("can you regenerate the code"), "regenerate");
+  assert.equal(classifyFollowUpRequest("please redo this, it's not working"), "regenerate");
+  assert.equal(classifyFollowUpRequest("try again"), "regenerate");
+  assert.equal(classifyFollowUpRequest("that's broken, fix it"), "regenerate");
+});
+
+test("add-a-feature phrasing is classified as feature-add", () => {
+  assert.equal(classifyFollowUpRequest("can you also add a button that plays a sound"), "feature-add");
+  assert.equal(classifyFollowUpRequest("now add a light feature"), "feature-add");
+  assert.equal(classifyFollowUpRequest("extend it to also show the time"), "feature-add");
+});
+
+test("a plain new-build request, and an unrelated use of 'add', both classify as fresh", () => {
+  assert.equal(classifyFollowUpRequest("make a beating heart animation"), "fresh");
+  assert.equal(classifyFollowUpRequest("add up all the button presses and show the total"), "fresh");
+});
+
+test("feature-add prompt extras instruct extending, not rewriting", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "feature-add" });
+  assert.match(prompt, /ADD A FEATURE/);
+  assert.match(prompt, /keep the existing variable names, structure/i);
+  assert.match(prompt, /never rewrite from scratch/i);
+});
+
+test("regenerate prompt extras instruct fixing in place, not rebuilding", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "regenerate" });
+  assert.match(prompt, /REGENERATE\/FIX/);
+  assert.doesNotMatch(prompt, /ADD A FEATURE/);
+});
+
+test("a fresh classification adds no follow-up instructions", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "fresh" });
+  assert.doesNotMatch(prompt, /FOLLOW-UP/);
 });

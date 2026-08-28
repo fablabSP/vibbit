@@ -12,6 +12,7 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "detectRequiredExtensions",
   "extensionDependencies",
   "buildExtensionPromptExtras",
+  "classifyFollowUpRequest",
   "buildSocraticPrompt",
   "parseSocraticOutput",
   "buildAllExtensionPromptExtras",
@@ -1202,6 +1203,22 @@ const SOCRATIC_MIN_QUESTIONS = 2;
 const SOCRATIC_MAX_QUESTIONS = 3;
 const SOCRATIC_MAX_OPTIONS = 4;
 
+// A menu of real, verified MakeCode/micro:bit facts to anchor questions on.
+// Exists because an early version of this prompt let the model invent
+// plausible-sounding but false platform behaviour (e.g. claiming multi-digit
+// numbers "corrupt pixels" -- basic.showNumber actually scrolls them one digit
+// at a time). Grounding the model in facts it can pick from and verify against
+// is far more reliable than trusting it to know micro:bit internals unprompted.
+const SOCRATIC_GROUNDED_FACTS = [
+  "basic.showNumber() scrolls a multi-digit number across the display one digit at a time; it never corrupts or garbles the display.",
+  "Each event handler (onButtonPressed, onGesture, forever, ...) runs as its own independent fiber. One firing does not wait for another to finish, and can interrupt whatever the display or another handler was doing.",
+  "A variable declared at the top level keeps its value between handler calls. It is not reset each time a handler runs.",
+  "basic.pause() only blocks the fiber it is called in. Other handlers keep running normally.",
+  "Math.random(min, max) is inclusive of both ends and can NEVER return a value outside that closed range -- there is no such thing as 'a random number outside the range you asked for'.",
+  "radio.sendNumber/sendString are only received by micro:bits on the same radio.setGroup() number; a different group hears nothing.",
+  "Reading a sensor (button, sonar, light level) always returns the value at that instant; it does not remember or predict future readings."
+];
+
 export function buildSocraticPrompt(target, requestHint = "") {
   const request = String(requestHint || "").trim();
   const lines = [
@@ -1214,9 +1231,20 @@ export function buildSocraticPrompt(target, requestHint = "") {
     '"What do you think happens if ...?", "What value would ... hold after ...?", "What do you think the screen',
     'shows if ... happens while ... is still running?"',
     "",
+    "CRITICAL -- every question must be about something that can actually happen in the program you are about",
+    "to build. Never ask about a case that is structurally impossible given how you will write the code (for",
+    "example: if you will generate Math.random(1, 6) for a dice roll, do not ask what happens if it picks 7 --",
+    "it cannot. A closed random range never produces a value outside itself).",
+    "",
+    "CRITICAL -- every explanation must be a REAL, verified fact about how MakeCode/micro:bit actually behaves.",
+    "Do not invent plausible-sounding technical detail (font widths, memory corruption, garbled pixels, and",
+    "similar are NOT real micro:bit failure modes). If you are not certain a claim is true, do not use it --",
+    "pick a different, verifiably true behaviour instead. Some real behaviours you can draw on:",
+    SOCRATIC_GROUNDED_FACTS.map((fact) => "- " + fact).join("\n"),
+    "",
     "Ground every question in a real behaviour this specific request will involve: event handlers overlapping,",
-    "a variable's value after repeated changes, what happens at a boundary (0, the max, an empty case), timing",
-    "and pauses, or two things trying to happen at once. Make the student reason about it, not recall trivia.",
+    "a variable's value after repeated changes, a real boundary in the code you will write (0, the max, an",
+    "empty case), timing and pauses, or two things trying to happen at once. Make the student reason about it.",
     "",
     "Every question needs ONE correct option (correctOptionId) and an explanation of why, written so it teaches",
     "something whichever option the student picks -- this explanation is shown after their answer either way.",
@@ -1231,6 +1259,8 @@ export function buildSocraticPrompt(target, requestHint = "") {
     "- " + SOCRATIC_MIN_QUESTIONS + " to " + SOCRATIC_MAX_QUESTIONS + " questions, at most " + SOCRATIC_MAX_OPTIONS + " options each.",
     "- Ask about behaviour specific to this request. Never a generic or unrelated programming question.",
     "- Never phrase a question as \"what should happen\" or \"which do you want\" -- always \"what do you think happens\".",
+    "- Never ask about a scenario the code you will build cannot actually produce.",
+    "- Never state a technical claim you are not confident is true of the real platform.",
     "- Every question must have a real correct answer, not a matter of preference.",
     "- If this request genuinely has nothing worth predicting (extremely rare), return {\"questions\":[]}."
   ];
@@ -1268,6 +1298,52 @@ export function parseSocraticOutput(raw) {
     return { questions };
   }
   return { questions: [] };
+}
+
+
+// ── Follow-up request classification ────────────────────────────────────
+// A message in an existing chat is not always a fresh build to quiz the
+// student on. Two other shapes are common and both deserve different
+// handling: "regenerate/redo" (fix or retry what is already there -- quizzing
+// achieves nothing, just rebuild) and "add a feature" (extend the existing
+// project -- quizzing is unnecessary friction, and generation must NOT throw
+// away working code to bolt on one new thing). Keyword-based on purpose: it
+// needs to run before any model call, at zero cost, the same way extension
+// detection does.
+const FOLLOWUP_REGENERATE_RE = /\b(regenerate|re-generate|redo|start over|do it again|try again|retry|rebuild (?:it|this)|fix (?:it|this)|redo (?:it|this|the code)|that('?s| is) (?:not|n't) (?:right|working)|not working|broken)\b/i;
+const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can you add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
+
+// Returns "regenerate" | "feature-add" | "fresh". Callers with conversation
+// state (does this chat have prior turns at all?) should treat "fresh" as the
+// only quiz-eligible case -- the very first message in a chat is never a
+// follow-up no matter what words it happens to contain.
+export function classifyFollowUpRequest(text) {
+  const value = String(text || "");
+  if (FOLLOWUP_REGENERATE_RE.test(value)) return "regenerate";
+  if (FOLLOWUP_FEATURE_ADD_RE.test(value)) return "feature-add";
+  return "fresh";
+}
+
+function followUpPromptExtras(followUpKind) {
+  if (followUpKind === "regenerate") {
+    return [
+      "",
+      "FOLLOW-UP -- REGENERATE/FIX: the student is asking to redo or fix the current project (see CURRENT_CODE),",
+      "not start a new one. Keep the same overall structure and approach where it still works. Change only what",
+      "needs to change to satisfy the request; do not rewrite parts that were not asked about."
+    ];
+  }
+  if (followUpKind === "feature-add") {
+    return [
+      "",
+      "FOLLOW-UP -- ADD A FEATURE: the student already has a working project (see CURRENT_CODE) and is asking to",
+      "ADD something to it, not rebuild it. Keep the existing variable names, structure, and behaviour exactly as",
+      "they are. Add ONLY what the new feature needs. Only touch unrelated existing code if it is genuinely",
+      "incompatible with the new feature, and say so in feedback if that happens -- never rewrite from scratch",
+      "as a default."
+    ];
+  }
+  return [];
 }
 
 export function buildTargetPromptExtras(target) {
@@ -1444,7 +1520,7 @@ function buildFewShotExample(config) {
 // the top and a single load-bearing rule repeated at the very end, because
 // models attend most strongly to the first and last lines of a long prompt.
 export function buildSystemPrompt(target, options = {}) {
-  const { conversational = false, requestHint = "", currentCode = "" } = options;
+  const { conversational = false, requestHint = "", currentCode = "", followUpKind = "fresh" } = options;
   const targetKey = TARGET_API_CATALOG[target] ? target : "microbit";
   const config = TARGET_API_CATALOG[targetKey];
   const targetPromptExtras = buildTargetPromptExtras(targetKey);
@@ -1471,6 +1547,8 @@ export function buildSystemPrompt(target, options = {}) {
 
   if (conversational) {
     lines.push("", "CONVERSATION: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state. If CURRENT_CODE is truncated, make conservative edits and preserve existing patterns.");
+    const followUpExtras = followUpPromptExtras(followUpKind);
+    if (followUpExtras.length) lines.push(...followUpExtras);
   }
 
   // 4. Output contract
