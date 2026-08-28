@@ -4,6 +4,9 @@ import test from "node:test";
 import {
   MICROBIT_EXTENSIONS,
   buildExtensionPromptExtras,
+  buildSocraticPrompt,
+  classifyFollowUpRequest,
+  parseSocraticOutput,
   buildSystemPrompt,
   detectMissingCapability,
   detectRequiredExtensions,
@@ -269,4 +272,170 @@ test("NFC arities match the real extension signatures", () => {
   assert.equal(runValidateBlocks("basic.showString(NFC.getUID())", "microbit").ok, true);
   const bad = runValidateBlocks("NFC.writeData(1, 2)", "microbit");
   assert.ok(bad.violations.some((v) => /NFC\.writeData arity/.test(v)));
+});
+
+/* ── Socratic mode ─────────────────────────────────────────── */
+
+test("Socratic prompt asks for predictions, not design choices", () => {
+  const prompt = buildSocraticPrompt("microbit", "make a dice game");
+  assert.match(prompt, /2-3 multiple-choice question/);
+  assert.match(prompt, /what do you think happens/i);
+  assert.match(prompt, /dice game/);
+  assert.match(prompt, /never phrase a question as/i);
+});
+
+test("a well-formed quiz question parses with its correct answer and explanation", () => {
+  const raw = JSON.stringify({
+    questions: [
+      {
+        id: "q1", ask: "What do you think happens if you shake it while a number is showing?",
+        options: [{ id: "a", label: "Nothing until it finishes" }, { id: "b", label: "It rerolls immediately" }],
+        correctOptionId: "b", explanation: "onGesture fires independently of the current display."
+      },
+      {
+        id: "q2", ask: "What does roll hold before the first shake?",
+        options: [{ id: "a", label: "0" }, { id: "b", label: "undefined" }],
+        correctOptionId: "a", explanation: "let roll = 0 initialises it."
+      }
+    ]
+  });
+  const parsed = parseSocraticOutput(raw);
+  assert.equal(parsed.questions.length, 2);
+  assert.equal(parsed.questions[0].correctOptionId, "b");
+  assert.match(parsed.questions[0].explanation, /onGesture/);
+});
+
+test("fewer than 2 valid questions is rejected outright, never shown as a lone question", () => {
+  const raw = JSON.stringify({
+    questions: [{
+      id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }],
+      correctOptionId: "a", explanation: "e"
+    }]
+  });
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("a question is dropped if correctOptionId does not match any option", () => {
+  const raw = JSON.stringify({
+    questions: [
+      { id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "z", explanation: "e" },
+      { id: "q2", ask: "y?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a", explanation: "e2" }
+    ]
+  });
+  // only q2 survives -> below the minimum of 2 -> the whole quiz is rejected
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("a question with no explanation is dropped", () => {
+  const raw = JSON.stringify({
+    questions: [
+      { id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a" },
+      { id: "q2", ask: "y?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a", explanation: "e" }
+    ]
+  });
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("Socratic output is capped at 3 questions and 4 options even if the model sends more", () => {
+  const manyOptions = Array.from({ length: 6 }, (_, i) => ({ id: String(i), label: "opt" + i }));
+  const q = (id) => ({ id, ask: id + "?", options: manyOptions, correctOptionId: "0", explanation: "e" });
+  const raw = JSON.stringify({ questions: [q("q1"), q("q2"), q("q3"), q("q4")] });
+  const parsed = parseSocraticOutput(raw);
+  assert.equal(parsed.questions.length, 3);
+  assert.equal(parsed.questions[0].options.length, 4);
+});
+
+test("malformed or empty Socratic output never throws, just yields no questions", () => {
+  assert.deepEqual(parseSocraticOutput("").questions, []);
+  assert.deepEqual(parseSocraticOutput("not json").questions, []);
+  assert.deepEqual(parseSocraticOutput('{"feedback":["x"]}').questions, []);
+});
+
+test("a request that needs no prediction question can return an empty list", () => {
+  assert.deepEqual(parseSocraticOutput('{"questions":[]}').questions, []);
+});
+
+test("Socratic prompt forbids impossible scenarios and hallucinated technical claims", () => {
+  const prompt = buildSocraticPrompt("microbit", "roll a dice from 1 to 6");
+  assert.match(prompt, /structurally impossible/);
+  assert.match(prompt, /cannot actually produce/i);
+  assert.match(prompt, /not invent plausible-sounding technical detail/i);
+  assert.match(prompt, /Math\.random\(min, max\)/);
+});
+
+/* ── Follow-up request classification ─────────────────────────────────── */
+
+test("regenerate/redo phrasing is classified as regenerate", () => {
+  assert.equal(classifyFollowUpRequest("can you regenerate the code"), "regenerate");
+  assert.equal(classifyFollowUpRequest("please redo this, it's not working"), "regenerate");
+  assert.equal(classifyFollowUpRequest("try again"), "regenerate");
+  assert.equal(classifyFollowUpRequest("that's broken, fix it"), "regenerate");
+});
+
+test("add-a-feature phrasing is classified as feature-add", () => {
+  assert.equal(classifyFollowUpRequest("can you also add a button that plays a sound"), "feature-add");
+  assert.equal(classifyFollowUpRequest("can i add a button that plays a sound"), "feature-add");
+  assert.equal(classifyFollowUpRequest("now add a light feature"), "feature-add");
+  assert.equal(classifyFollowUpRequest("extend it to also show the time"), "feature-add");
+});
+
+test("Socratic prompt tells the model not to re-ask what the request already answers", () => {
+  const prompt = buildSocraticPrompt("microbit", "x");
+  assert.match(prompt, /patronising/);
+  assert.match(prompt, /already states explicitly/i);
+  assert.doesNotMatch(prompt, /extremely rare/);
+});
+
+test("a plain new-build request, and an unrelated use of 'add', both classify as fresh", () => {
+  assert.equal(classifyFollowUpRequest("make a beating heart animation"), "fresh");
+  assert.equal(classifyFollowUpRequest("add up all the button presses and show the total"), "fresh");
+});
+
+test("feature-add prompt extras instruct extending, not rewriting", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "feature-add" });
+  assert.match(prompt, /ADD A FEATURE/);
+  assert.match(prompt, /keep the existing variable names, structure/i);
+  assert.match(prompt, /never rewrite from scratch/i);
+});
+
+test("regenerate prompt extras instruct fixing in place, not rebuilding", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "regenerate" });
+  assert.match(prompt, /REGENERATE\/FIX/);
+  assert.doesNotMatch(prompt, /ADD A FEATURE/);
+});
+
+test("a fresh classification adds no follow-up instructions", () => {
+  const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "fresh" });
+  assert.doesNotMatch(prompt, /FOLLOW-UP/);
+});
+
+/* ── code quality: prefer Math.randomRange over array + _pickRandom ─────── */
+
+test("system prompt tells the model to use Math.randomRange for a numeric range", () => {
+  const prompt = buildSystemPrompt("microbit", {});
+  assert.match(prompt, /Math\.randomRange\(min, max\)/);
+  assert.match(prompt, /NEVER build an/);
+  assert.doesNotMatch(prompt, /use options\._pickRandom\(\) instead/);
+});
+
+test("Math.randomRange(1, 6) validates cleanly as the idiomatic dice-roll form", () => {
+  const code = [
+    "let roll = 0",
+    "input.onGesture(Gesture.Shake, function () {",
+    "    roll = Math.randomRange(1, 6)",
+    "    basic.showNumber(roll)",
+    "})"
+  ].join("\n");
+  const result = runValidateBlocks(code, "microbit");
+  assert.equal(result.ok, true, result.violations.join(", "));
+});
+
+test("Math.randomRange arity is checked like any other known call", () => {
+  const result = runValidateBlocks("let x = Math.randomRange(1, 6, 9)", "microbit");
+  assert.ok(result.violations.some((v) => /Math\.randomRange arity/.test(v)));
+});
+
+test("the retry hint for randint now points at Math.randomRange", () => {
+  const prompt = buildSystemPrompt("microbit", {});
+  assert.match(prompt, /randint\(\.\.\.\) \(use Math\.randomRange/);
 });

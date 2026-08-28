@@ -12,6 +12,9 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "detectRequiredExtensions",
   "extensionDependencies",
   "buildExtensionPromptExtras",
+  "classifyFollowUpRequest",
+  "buildSocraticPrompt",
+  "parseSocraticOutput",
   "buildAllExtensionPromptExtras",
   "detectMissingCapability",
   "buildSystemPrompt",
@@ -419,6 +422,7 @@ const MICROBIT_CALL_SIGNATURES = [
   { call: "input.temperature", minArgs: 0, maxArgs: 0 },
   { call: "input.lightLevel", minArgs: 0, maxArgs: 0 },
   { call: "input.acceleration", minArgs: 1, maxArgs: 1 },
+  { call: "Math.randomRange", minArgs: 2, maxArgs: 2 },
   { call: "input.compassHeading", minArgs: 0, maxArgs: 0 },
   { call: "input.rotation", minArgs: 1, maxArgs: 1 },
   { call: "input.magneticForce", minArgs: 1, maxArgs: 1 },
@@ -1185,6 +1189,169 @@ export function buildExtensionPromptExtras(target, requestHint = "", code = "") 
   return lines;
 }
 
+
+// ── Socratic mode ────────────────────────────────────────────────────────
+// A prediction quiz, not a spec form. Each question asks the student to guess
+// what a program would DO in a scenario tied to their request -- not to pick a
+// design option. The point is testing and building their mental model of how
+// the code behaves (event handlers, timing, state, edge cases), the way a
+// teacher would probe understanding rather than just take dictation. Every
+// question has one correct option and an explanation shown after any pick, so
+// a wrong guess still teaches. No skip: the student answers every question
+// before code is generated, and 2-3 is enough to be worthwhile without
+// dragging the request out or wasting API budget on question after question.
+const SOCRATIC_MIN_QUESTIONS = 2;
+const SOCRATIC_MAX_QUESTIONS = 3;
+const SOCRATIC_MAX_OPTIONS = 4;
+
+// A menu of real, verified MakeCode/micro:bit facts to anchor questions on.
+// Exists because an early version of this prompt let the model invent
+// plausible-sounding but false platform behaviour (e.g. claiming multi-digit
+// numbers "corrupt pixels" -- basic.showNumber actually scrolls them one digit
+// at a time). Grounding the model in facts it can pick from and verify against
+// is far more reliable than trusting it to know micro:bit internals unprompted.
+const SOCRATIC_GROUNDED_FACTS = [
+  "basic.showNumber() scrolls a multi-digit number across the display one digit at a time; it never corrupts or garbles the display.",
+  "Each event handler (onButtonPressed, onGesture, forever, ...) runs as its own independent fiber. One firing does not wait for another to finish, and can interrupt whatever the display or another handler was doing.",
+  "A variable declared at the top level keeps its value between handler calls. It is not reset each time a handler runs.",
+  "basic.pause() only blocks the fiber it is called in. Other handlers keep running normally.",
+  "Math.random(min, max) is inclusive of both ends and can NEVER return a value outside that closed range -- there is no such thing as 'a random number outside the range you asked for'.",
+  "radio.sendNumber/sendString are only received by micro:bits on the same radio.setGroup() number; a different group hears nothing.",
+  "Reading a sensor (button, sonar, light level) always returns the value at that instant; it does not remember or predict future readings."
+];
+
+export function buildSocraticPrompt(target, requestHint = "") {
+  const request = String(requestHint || "").trim();
+  const lines = [
+    "The student wants help with this MakeCode " + target + " request:",
+    '"' + request.replace(/"/g, "'") + '"',
+    "",
+    "Before any code is written, quiz the student with " + SOCRATIC_MIN_QUESTIONS + "-" + SOCRATIC_MAX_QUESTIONS
+      + " multiple-choice questions that test how well they can predict what a program actually does --",
+    "NOT questions asking them to choose a design option. Phrase every question as a prediction:",
+    '"What do you think happens if ...?", "What value would ... hold after ...?", "What do you think the screen',
+    'shows if ... happens while ... is still running?"',
+    "",
+    "CRITICAL -- every question must be about something that can actually happen in the program you are about",
+    "to build. Never ask about a case that is structurally impossible given how you will write the code (for",
+    "example: if you will generate Math.random(1, 6) for a dice roll, do not ask what happens if it picks 7 --",
+    "it cannot. A closed random range never produces a value outside itself).",
+    "",
+    "CRITICAL -- every explanation must be a REAL, verified fact about how MakeCode/micro:bit actually behaves.",
+    "Do not invent plausible-sounding technical detail (font widths, memory corruption, garbled pixels, and",
+    "similar are NOT real micro:bit failure modes). If you are not certain a claim is true, do not use it --",
+    "pick a different, verifiably true behaviour instead. Some real behaviours you can draw on:",
+    SOCRATIC_GROUNDED_FACTS.map((fact) => "- " + fact).join("\n"),
+    "",
+    "Ground every question in a real behaviour this specific request will involve: event handlers overlapping,",
+    "a variable's value after repeated changes, a real boundary in the code you will write (0, the max, an",
+    "empty case), timing and pauses, or two things trying to happen at once. Make the student reason about it.",
+    "",
+    "Every question needs ONE correct option (correctOptionId) and an explanation of why, written so it teaches",
+    "something whichever option the student picks -- this explanation is shown after their answer either way.",
+    "",
+    "Reply with ONLY this JSON shape, nothing else:",
+    '{"questions":[{"id":"q1","ask":"What do you think ... ?","options":[',
+    '  {"id":"a","label":"..."},',
+    '  {"id":"b","label":"..."}',
+    '],"correctOptionId":"b","explanation":"..."}]}',
+    "",
+    "Rules:",
+    "- " + SOCRATIC_MIN_QUESTIONS + " to " + SOCRATIC_MAX_QUESTIONS + " questions, at most " + SOCRATIC_MAX_OPTIONS + " options each.",
+    "- Ask about behaviour specific to this request. Never a generic or unrelated programming question.",
+    "- Never phrase a question as \"what should happen\" or \"which do you want\" -- always \"what do you think happens\".",
+    "- Never ask about a scenario the code you will build cannot actually produce.",
+    "- Never state a technical claim you are not confident is true of the real platform.",
+    "- Every question must have a real correct answer, not a matter of preference.",
+    "- If a good question would just be re-asking something the request ALREADY states explicitly (a named",
+    "  behaviour, an exact mechanism, a specific edge case the student called out themselves), do not ask it.",
+    "  A student who already wrote \"make sure it acts like a held key, not a single press\" has already answered",
+    "  the tap-vs-hold question -- asking it back to them is patronising, not Socratic.",
+    "- If everything worth predicting is already explicitly specified in the request, return {\"questions\":[]}",
+    "  rather than inventing a weaker question just to have one."
+  ];
+  return lines.join("\n");
+}
+
+// Salvage-safe like parseModelOutput: malformed output, or fewer than the
+// minimum real questions, yields an empty list so the caller falls straight
+// through to generation rather than showing a broken or too-short quiz.
+export function parseSocraticOutput(raw) {
+  const objects = parseJsonObjectsFromText(raw);
+  for (const parsed of objects) {
+    if (!parsed || !Array.isArray(parsed.questions)) continue;
+    const questions = [];
+    for (const q of parsed.questions.slice(0, SOCRATIC_MAX_QUESTIONS)) {
+      if (!q || typeof q.ask !== "string" || !q.ask.trim() || !Array.isArray(q.options)) continue;
+      if (typeof q.explanation !== "string" || !q.explanation.trim()) continue;
+      const options = [];
+      for (const opt of q.options.slice(0, SOCRATIC_MAX_OPTIONS)) {
+        if (!opt || typeof opt.label !== "string" || !opt.label.trim()) continue;
+        options.push({ id: String(opt.id || options.length), label: opt.label.trim() });
+      }
+      if (options.length < 2) continue;
+      const correctOptionId = String(q.correctOptionId || "");
+      if (!options.some((opt) => opt.id === correctOptionId)) continue;
+      questions.push({
+        id: String(q.id || ("q" + (questions.length + 1))),
+        ask: q.ask.trim(),
+        options,
+        correctOptionId,
+        explanation: q.explanation.trim()
+      });
+    }
+    if (questions.length < SOCRATIC_MIN_QUESTIONS) return { questions: [] };
+    return { questions };
+  }
+  return { questions: [] };
+}
+
+
+// ── Follow-up request classification ────────────────────────────────────
+// A message in an existing chat is not always a fresh build to quiz the
+// student on. Two other shapes are common and both deserve different
+// handling: "regenerate/redo" (fix or retry what is already there -- quizzing
+// achieves nothing, just rebuild) and "add a feature" (extend the existing
+// project -- quizzing is unnecessary friction, and generation must NOT throw
+// away working code to bolt on one new thing). Keyword-based on purpose: it
+// needs to run before any model call, at zero cost, the same way extension
+// detection does.
+const FOLLOWUP_REGENERATE_RE = /\b(regenerate|re-generate|redo|start over|do it again|try again|retry|rebuild (?:it|this)|fix (?:it|this)|redo (?:it|this|the code)|that('?s| is) (?:not|n't) (?:right|working)|not working|broken)\b/i;
+const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can (?:you|i) add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
+
+// Returns "regenerate" | "feature-add" | "fresh". Callers with conversation
+// state (does this chat have prior turns at all?) should treat "fresh" as the
+// only quiz-eligible case -- the very first message in a chat is never a
+// follow-up no matter what words it happens to contain.
+export function classifyFollowUpRequest(text) {
+  const value = String(text || "");
+  if (FOLLOWUP_REGENERATE_RE.test(value)) return "regenerate";
+  if (FOLLOWUP_FEATURE_ADD_RE.test(value)) return "feature-add";
+  return "fresh";
+}
+
+function followUpPromptExtras(followUpKind) {
+  if (followUpKind === "regenerate") {
+    return [
+      "",
+      "FOLLOW-UP -- REGENERATE/FIX: the student is asking to redo or fix the current project (see CURRENT_CODE),",
+      "not start a new one. Keep the same overall structure and approach where it still works. Change only what",
+      "needs to change to satisfy the request; do not rewrite parts that were not asked about."
+    ];
+  }
+  if (followUpKind === "feature-add") {
+    return [
+      "",
+      "FOLLOW-UP -- ADD A FEATURE: the student already has a working project (see CURRENT_CODE) and is asking to",
+      "ADD something to it, not rebuild it. Keep the existing variable names, structure, and behaviour exactly as",
+      "they are. Add ONLY what the new feature needs. Only touch unrelated existing code if it is genuinely",
+      "incompatible with the new feature, and say so in feedback if that happens -- never rewrite from scratch",
+      "as a default."
+    ];
+  }
+  return [];
+}
+
 export function buildTargetPromptExtras(target) {
   if (target !== "microbit") return [];
   return [
@@ -1298,8 +1465,12 @@ function buildBlockSafeDoRules(target) {
     "Declare every variable with let and an initial value, e.g. let score = 0.",
     "Write for loops exactly as for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); walk a list with for (let item of list).",
     "Keep event registrations and function declarations at the top level, never nested inside another handler.",
-    "Pick a random item with options._pickRandom() from an array of choices.",
-    "Join strings with \"text\" + value, and pass function () { } for every handler."
+    "Pick a random ITEM from a literal list with options._pickRandom(), e.g. [IconNames.Heart, IconNames.Yes]._pickRandom().",
+    "For a random NUMBER in a range use Math.randomRange(min, max) -- e.g. Math.randomRange(1, 6) for a dice roll. NEVER build an",
+    "array of a numeric range just to call ._pickRandom() on it; that is needlessly verbose and Math.randomRange is the direct block.",
+    "Join strings with \"text\" + value, and pass function () { } for every handler.",
+    "Use the most direct MakeCode block for the task. If a single, well-known block does exactly what is needed",
+    "(like Math.randomRange for a numeric range), do not build a longer workaround out of more general blocks."
   ];
   if (targetKey === "arcade") {
     return [
@@ -1331,7 +1502,7 @@ const BLOCK_UNSAFE_RULES = [
   "Optional chaining (?.), nullish coalescing (??), for...in loops.",
   "import/export, async/await/Promise, yield, eval, classes, interfaces, type aliases, enums, generics.",
   "Higher-order array methods (map/filter/reduce/forEach/find/some/every).",
-  "randint(...) (use options._pickRandom() instead).",
+  "randint(...) (use Math.randomRange(min, max) for a numeric range, or options._pickRandom() for a literal list of choices).",
   "null, undefined, casts (as), and bitwise operators (| & ^ << >> >>>) with their compound assignments.",
   "setTimeout, setInterval, console, comments, markdown fences, or any prose outside the JSON.",
   "Returning a value from a callback/handler, optional or default parameters in your own functions, and assignment operators other than =, +=, -=.",
@@ -1359,7 +1530,7 @@ function buildFewShotExample(config) {
 // the top and a single load-bearing rule repeated at the very end, because
 // models attend most strongly to the first and last lines of a long prompt.
 export function buildSystemPrompt(target, options = {}) {
-  const { conversational = false, requestHint = "", currentCode = "" } = options;
+  const { conversational = false, requestHint = "", currentCode = "", followUpKind = "fresh" } = options;
   const targetKey = TARGET_API_CATALOG[target] ? target : "microbit";
   const config = TARGET_API_CATALOG[targetKey];
   const targetPromptExtras = buildTargetPromptExtras(targetKey);
@@ -1386,6 +1557,8 @@ export function buildSystemPrompt(target, options = {}) {
 
   if (conversational) {
     lines.push("", "CONVERSATION: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state. If CURRENT_CODE is truncated, make conservative edits and preserve existing patterns.");
+    const followUpExtras = followUpPromptExtras(followUpKind);
+    if (followUpExtras.length) lines.push(...followUpExtras);
   }
 
   // 4. Output contract
@@ -1591,7 +1764,7 @@ const VIOLATION_FIX_HINTS = [
   { match: /template string/i, hint: "build strings with \"text\" + value instead of `${ }`" },
   { match: /higher-order array/i, hint: "loop with for (let item of list) instead of map/filter/forEach" },
   { match: /for-loop|for\.\.\.in/i, hint: "use for (let i = 0; i < limit; i++)" },
-  { match: /randint/i, hint: "use options._pickRandom() for random choices" },
+  { match: /randint/i, hint: "use Math.randomRange(min, max) for a numeric range, or options._pickRandom() for a list of choices" },
   { match: /without initializer/i, hint: "give every let an initial value, e.g. let x = 0" },
   { match: /nested event|non-top-level/i, hint: "move event handlers and functions to the top level" },
   { match: /basic\.onStart/i, hint: "write startup behaviour as top-level statements; they become the on start block" },
