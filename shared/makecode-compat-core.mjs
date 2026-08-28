@@ -422,6 +422,7 @@ const MICROBIT_CALL_SIGNATURES = [
   { call: "input.temperature", minArgs: 0, maxArgs: 0 },
   { call: "input.lightLevel", minArgs: 0, maxArgs: 0 },
   { call: "input.acceleration", minArgs: 1, maxArgs: 1 },
+  { call: "Math.randomRange", minArgs: 2, maxArgs: 2 },
   { call: "input.compassHeading", minArgs: 0, maxArgs: 0 },
   { call: "input.rotation", minArgs: 1, maxArgs: 1 },
   { call: "input.magneticForce", minArgs: 1, maxArgs: 1 },
@@ -1464,8 +1465,12 @@ function buildBlockSafeDoRules(target) {
     "Declare every variable with let and an initial value, e.g. let score = 0.",
     "Write for loops exactly as for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); walk a list with for (let item of list).",
     "Keep event registrations and function declarations at the top level, never nested inside another handler.",
-    "Pick a random item with options._pickRandom() from an array of choices.",
-    "Join strings with \"text\" + value, and pass function () { } for every handler."
+    "Pick a random ITEM from a literal list with options._pickRandom(), e.g. [IconNames.Heart, IconNames.Yes]._pickRandom().",
+    "For a random NUMBER in a range use Math.randomRange(min, max) -- e.g. Math.randomRange(1, 6) for a dice roll. NEVER build an",
+    "array of a numeric range just to call ._pickRandom() on it; that is needlessly verbose and Math.randomRange is the direct block.",
+    "Join strings with \"text\" + value, and pass function () { } for every handler.",
+    "Use the most direct MakeCode block for the task. If a single, well-known block does exactly what is needed",
+    "(like Math.randomRange for a numeric range), do not build a longer workaround out of more general blocks."
   ];
   if (targetKey === "arcade") {
     return [
@@ -1497,7 +1502,7 @@ const BLOCK_UNSAFE_RULES = [
   "Optional chaining (?.), nullish coalescing (??), for...in loops.",
   "import/export, async/await/Promise, yield, eval, classes, interfaces, type aliases, enums, generics.",
   "Higher-order array methods (map/filter/reduce/forEach/find/some/every).",
-  "randint(...) (use options._pickRandom() instead).",
+  "randint(...) (use Math.randomRange(min, max) for a numeric range, or options._pickRandom() for a literal list of choices).",
   "null, undefined, casts (as), and bitwise operators (| & ^ << >> >>>) with their compound assignments.",
   "setTimeout, setInterval, console, comments, markdown fences, or any prose outside the JSON.",
   "Returning a value from a callback/handler, optional or default parameters in your own functions, and assignment operators other than =, +=, -=.",
@@ -1759,7 +1764,7 @@ const VIOLATION_FIX_HINTS = [
   { match: /template string/i, hint: "build strings with \"text\" + value instead of `${ }`" },
   { match: /higher-order array/i, hint: "loop with for (let item of list) instead of map/filter/forEach" },
   { match: /for-loop|for\.\.\.in/i, hint: "use for (let i = 0; i < limit; i++)" },
-  { match: /randint/i, hint: "use options._pickRandom() for random choices" },
+  { match: /randint/i, hint: "use Math.randomRange(min, max) for a numeric range, or options._pickRandom() for a list of choices" },
   { match: /without initializer/i, hint: "give every let an initial value, e.g. let x = 0" },
   { match: /nested event|non-top-level/i, hint: "move event handlers and functions to the top level" },
   { match: /basic\.onStart/i, hint: "write startup behaviour as top-level statements; they become the on start block" },

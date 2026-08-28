@@ -408,3 +408,34 @@ test("a fresh classification adds no follow-up instructions", () => {
   const prompt = buildSystemPrompt("microbit", { conversational: true, followUpKind: "fresh" });
   assert.doesNotMatch(prompt, /FOLLOW-UP/);
 });
+
+/* ── code quality: prefer Math.randomRange over array + _pickRandom ─────── */
+
+test("system prompt tells the model to use Math.randomRange for a numeric range", () => {
+  const prompt = buildSystemPrompt("microbit", {});
+  assert.match(prompt, /Math\.randomRange\(min, max\)/);
+  assert.match(prompt, /NEVER build an/);
+  assert.doesNotMatch(prompt, /use options\._pickRandom\(\) instead/);
+});
+
+test("Math.randomRange(1, 6) validates cleanly as the idiomatic dice-roll form", () => {
+  const code = [
+    "let roll = 0",
+    "input.onGesture(Gesture.Shake, function () {",
+    "    roll = Math.randomRange(1, 6)",
+    "    basic.showNumber(roll)",
+    "})"
+  ].join("\n");
+  const result = runValidateBlocks(code, "microbit");
+  assert.equal(result.ok, true, result.violations.join(", "));
+});
+
+test("Math.randomRange arity is checked like any other known call", () => {
+  const result = runValidateBlocks("let x = Math.randomRange(1, 6, 9)", "microbit");
+  assert.ok(result.violations.some((v) => /Math\.randomRange arity/.test(v)));
+});
+
+test("the retry hint for randint now points at Math.randomRange", () => {
+  const prompt = buildSystemPrompt("microbit", {});
+  assert.match(prompt, /randint\(\.\.\.\) \(use Math\.randomRange/);
+});
