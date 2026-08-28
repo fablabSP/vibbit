@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   MICROBIT_EXTENSIONS,
   buildExtensionPromptExtras,
+  buildSocraticPrompt,
+  parseSocraticOutput,
   buildSystemPrompt,
   detectMissingCapability,
   detectRequiredExtensions,
@@ -269,4 +271,85 @@ test("NFC arities match the real extension signatures", () => {
   assert.equal(runValidateBlocks("basic.showString(NFC.getUID())", "microbit").ok, true);
   const bad = runValidateBlocks("NFC.writeData(1, 2)", "microbit");
   assert.ok(bad.violations.some((v) => /NFC\.writeData arity/.test(v)));
+});
+
+/* ── Socratic mode ─────────────────────────────────────────── */
+
+test("Socratic prompt asks for predictions, not design choices", () => {
+  const prompt = buildSocraticPrompt("microbit", "make a dice game");
+  assert.match(prompt, /2-3 multiple-choice question/);
+  assert.match(prompt, /what do you think happens/i);
+  assert.match(prompt, /dice game/);
+  assert.match(prompt, /never phrase a question as/i);
+});
+
+test("a well-formed quiz question parses with its correct answer and explanation", () => {
+  const raw = JSON.stringify({
+    questions: [
+      {
+        id: "q1", ask: "What do you think happens if you shake it while a number is showing?",
+        options: [{ id: "a", label: "Nothing until it finishes" }, { id: "b", label: "It rerolls immediately" }],
+        correctOptionId: "b", explanation: "onGesture fires independently of the current display."
+      },
+      {
+        id: "q2", ask: "What does roll hold before the first shake?",
+        options: [{ id: "a", label: "0" }, { id: "b", label: "undefined" }],
+        correctOptionId: "a", explanation: "let roll = 0 initialises it."
+      }
+    ]
+  });
+  const parsed = parseSocraticOutput(raw);
+  assert.equal(parsed.questions.length, 2);
+  assert.equal(parsed.questions[0].correctOptionId, "b");
+  assert.match(parsed.questions[0].explanation, /onGesture/);
+});
+
+test("fewer than 2 valid questions is rejected outright, never shown as a lone question", () => {
+  const raw = JSON.stringify({
+    questions: [{
+      id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }],
+      correctOptionId: "a", explanation: "e"
+    }]
+  });
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("a question is dropped if correctOptionId does not match any option", () => {
+  const raw = JSON.stringify({
+    questions: [
+      { id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "z", explanation: "e" },
+      { id: "q2", ask: "y?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a", explanation: "e2" }
+    ]
+  });
+  // only q2 survives -> below the minimum of 2 -> the whole quiz is rejected
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("a question with no explanation is dropped", () => {
+  const raw = JSON.stringify({
+    questions: [
+      { id: "q1", ask: "x?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a" },
+      { id: "q2", ask: "y?", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }], correctOptionId: "a", explanation: "e" }
+    ]
+  });
+  assert.deepEqual(parseSocraticOutput(raw).questions, []);
+});
+
+test("Socratic output is capped at 3 questions and 4 options even if the model sends more", () => {
+  const manyOptions = Array.from({ length: 6 }, (_, i) => ({ id: String(i), label: "opt" + i }));
+  const q = (id) => ({ id, ask: id + "?", options: manyOptions, correctOptionId: "0", explanation: "e" });
+  const raw = JSON.stringify({ questions: [q("q1"), q("q2"), q("q3"), q("q4")] });
+  const parsed = parseSocraticOutput(raw);
+  assert.equal(parsed.questions.length, 3);
+  assert.equal(parsed.questions[0].options.length, 4);
+});
+
+test("malformed or empty Socratic output never throws, just yields no questions", () => {
+  assert.deepEqual(parseSocraticOutput("").questions, []);
+  assert.deepEqual(parseSocraticOutput("not json").questions, []);
+  assert.deepEqual(parseSocraticOutput('{"feedback":["x"]}').questions, []);
+});
+
+test("a request that needs no prediction question can return an empty list", () => {
+  assert.deepEqual(parseSocraticOutput('{"questions":[]}').questions, []);
 });

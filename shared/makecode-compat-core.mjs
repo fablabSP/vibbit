@@ -12,6 +12,8 @@ export const SHARED_COMPAT_EXPORT_NAMES = [
   "detectRequiredExtensions",
   "extensionDependencies",
   "buildExtensionPromptExtras",
+  "buildSocraticPrompt",
+  "parseSocraticOutput",
   "buildAllExtensionPromptExtras",
   "detectMissingCapability",
   "buildSystemPrompt",
@@ -1183,6 +1185,89 @@ export function buildExtensionPromptExtras(target, requestHint = "", code = "") 
     lines.push(...SERVO_RULES.map((rule) => "- " + rule));
   }
   return lines;
+}
+
+
+// ── Socratic mode ────────────────────────────────────────────────────────
+// A prediction quiz, not a spec form. Each question asks the student to guess
+// what a program would DO in a scenario tied to their request -- not to pick a
+// design option. The point is testing and building their mental model of how
+// the code behaves (event handlers, timing, state, edge cases), the way a
+// teacher would probe understanding rather than just take dictation. Every
+// question has one correct option and an explanation shown after any pick, so
+// a wrong guess still teaches. No skip: the student answers every question
+// before code is generated, and 2-3 is enough to be worthwhile without
+// dragging the request out or wasting API budget on question after question.
+const SOCRATIC_MIN_QUESTIONS = 2;
+const SOCRATIC_MAX_QUESTIONS = 3;
+const SOCRATIC_MAX_OPTIONS = 4;
+
+export function buildSocraticPrompt(target, requestHint = "") {
+  const request = String(requestHint || "").trim();
+  const lines = [
+    "The student wants help with this MakeCode " + target + " request:",
+    '"' + request.replace(/"/g, "'") + '"',
+    "",
+    "Before any code is written, quiz the student with " + SOCRATIC_MIN_QUESTIONS + "-" + SOCRATIC_MAX_QUESTIONS
+      + " multiple-choice questions that test how well they can predict what a program actually does --",
+    "NOT questions asking them to choose a design option. Phrase every question as a prediction:",
+    '"What do you think happens if ...?", "What value would ... hold after ...?", "What do you think the screen',
+    'shows if ... happens while ... is still running?"',
+    "",
+    "Ground every question in a real behaviour this specific request will involve: event handlers overlapping,",
+    "a variable's value after repeated changes, what happens at a boundary (0, the max, an empty case), timing",
+    "and pauses, or two things trying to happen at once. Make the student reason about it, not recall trivia.",
+    "",
+    "Every question needs ONE correct option (correctOptionId) and an explanation of why, written so it teaches",
+    "something whichever option the student picks -- this explanation is shown after their answer either way.",
+    "",
+    "Reply with ONLY this JSON shape, nothing else:",
+    '{"questions":[{"id":"q1","ask":"What do you think ... ?","options":[',
+    '  {"id":"a","label":"..."},',
+    '  {"id":"b","label":"..."}',
+    '],"correctOptionId":"b","explanation":"..."}]}',
+    "",
+    "Rules:",
+    "- " + SOCRATIC_MIN_QUESTIONS + " to " + SOCRATIC_MAX_QUESTIONS + " questions, at most " + SOCRATIC_MAX_OPTIONS + " options each.",
+    "- Ask about behaviour specific to this request. Never a generic or unrelated programming question.",
+    "- Never phrase a question as \"what should happen\" or \"which do you want\" -- always \"what do you think happens\".",
+    "- Every question must have a real correct answer, not a matter of preference.",
+    "- If this request genuinely has nothing worth predicting (extremely rare), return {\"questions\":[]}."
+  ];
+  return lines.join("\n");
+}
+
+// Salvage-safe like parseModelOutput: malformed output, or fewer than the
+// minimum real questions, yields an empty list so the caller falls straight
+// through to generation rather than showing a broken or too-short quiz.
+export function parseSocraticOutput(raw) {
+  const objects = parseJsonObjectsFromText(raw);
+  for (const parsed of objects) {
+    if (!parsed || !Array.isArray(parsed.questions)) continue;
+    const questions = [];
+    for (const q of parsed.questions.slice(0, SOCRATIC_MAX_QUESTIONS)) {
+      if (!q || typeof q.ask !== "string" || !q.ask.trim() || !Array.isArray(q.options)) continue;
+      if (typeof q.explanation !== "string" || !q.explanation.trim()) continue;
+      const options = [];
+      for (const opt of q.options.slice(0, SOCRATIC_MAX_OPTIONS)) {
+        if (!opt || typeof opt.label !== "string" || !opt.label.trim()) continue;
+        options.push({ id: String(opt.id || options.length), label: opt.label.trim() });
+      }
+      if (options.length < 2) continue;
+      const correctOptionId = String(q.correctOptionId || "");
+      if (!options.some((opt) => opt.id === correctOptionId)) continue;
+      questions.push({
+        id: String(q.id || ("q" + (questions.length + 1))),
+        ask: q.ask.trim(),
+        options,
+        correctOptionId,
+        explanation: q.explanation.trim()
+      });
+    }
+    if (questions.length < SOCRATIC_MIN_QUESTIONS) return { questions: [] };
+    return { questions };
+  }
+  return { questions: [] };
 }
 
 export function buildTargetPromptExtras(target) {

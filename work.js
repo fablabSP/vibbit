@@ -41,6 +41,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_KEY_PREFIX = "__vibbit_key_";
   const STORAGE_PROVIDER = "__vibbit_provider";
   const STORAGE_MODEL = "__vibbit_model";
+  // Gemini's free tier is what makes Vibbit usable without a school procuring
+  // a paid key, so it is the default provider a new install lands on.
+  const DEFAULT_PROVIDER = "gemini";
+  const defaultProvider = () => storageGet(STORAGE_PROVIDER) || DEFAULT_PROVIDER;
+
+  // Managed mode is always Socratic -- that is the whole point of the
+  // classroom setting and it is not something a student can turn off. BYOK
+  // defaults ON too (it is a learning aid, not a hurdle) but can be switched
+  // off in Advanced for anyone who wants straight generation.
+  const STORAGE_SOCRATIC = "__vibbit_socratic";
+  const socraticEnabled = () => {
+    const mode = storageGet(STORAGE_MODE) || "byok";
+    if (mode === "managed") return true;
+    return storageGet(STORAGE_SOCRATIC) !== "0";
+  };
   const STORAGE_THINK_HARDER = "__vibbit_think_harder";
   const STORAGE_SETUP_DONE = "__vibbit_setup_done";
   const STORAGE_SERVER = "__vibbit_server";
@@ -374,6 +389,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <input id="set-key" type="password" placeholder="API key" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
     + '      <button id="save" style="padding:8px 12px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">Save Key</button>'
     + '    </div>'
+    + '    <div id="save-confirm" style="display:none;margin-top:8px;padding:9px 12px;border-radius:8px;border:1px solid #1f4d2c;background:#0f1d12;color:#7ee2a0;font-size:12px;align-items:center;justify-content:space-between;gap:10px">'
+    + '      <span>\u2713 Key saved.</span>'
+    + '      <button id="save-confirm-back" type="button" style="padding:5px 11px;border-radius:7px;border:1px solid #1f4d2c;background:transparent;color:#7ee2a0;font-size:12px;cursor:pointer;font-family:inherit">Back to chat</button>'
+    + '    </div>'
     + '  </div>'
 
     /* Managed: server URL */
@@ -399,6 +418,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '        <option value="maker">Maker</option>'
     + '      </select>'
     + '    </div>'
+    + '    <div id="set-socratic-row" style="margin-top:10px;display:flex;align-items:center;gap:8px">'
+    + '      <input id="set-socratic" type="checkbox" style="width:15px;height:15px">'
+    + '      <label for="set-socratic" style="font-size:12px;color:#9eb2ff;cursor:pointer">Ask guided questions before generating (Socratic mode)</label>'
+    + '    </div>'
+    + '    <div id="set-socratic-locked-note" style="display:none;margin-top:8px;font-size:11px;color:#5a6d8f">Guided questions are always on in Managed mode.</div>'
     + '  </details>'
 
     + '</div>'
@@ -683,11 +707,33 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (setMode.value !== mode) setMode.value = mode;
     setModeVisibility(mode, settingsModeRefs);
     storageSet(STORAGE_MODE, mode);
+    try { refreshSocraticControl(); } catch (error) {}
+  };
+
+  // Managed mode locks the checkbox on and disables it, since guided
+  // questions are a classroom setting, not a per-student preference.
+  const refreshSocraticControl = () => {
+    const box = $("#set-socratic");
+    const note = $("#set-socratic-locked-note");
+    const row = $("#set-socratic-row");
+    if (!box) return;
+    const mode = coerceMode(storageGet(STORAGE_MODE) || "byok");
+    if (mode === "managed") {
+      box.checked = true;
+      box.disabled = true;
+      if (row) row.style.opacity = "0.6";
+      if (note) note.style.display = "block";
+    } else {
+      box.checked = storageGet(STORAGE_SOCRATIC) !== "0";
+      box.disabled = false;
+      if (row) row.style.opacity = "1";
+      if (note) note.style.display = "none";
+    }
   };
 
   const refreshThinkHarderVisibility = () => {
     const mode = coerceMode(storageGet(STORAGE_MODE) || "byok");
-    const provider = storageGet(STORAGE_PROVIDER) || "openai";
+    const provider = defaultProvider();
     const model = storageGet(STORAGE_MODEL) || "";
     const supportsThinking = supportsThinkHarder(provider, model);
     thinkHarderWrap.style.display = mode === "byok" && supportsThinking ? "inline-flex" : "none";
@@ -723,7 +769,61 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const EDITOR_STATES = {
     ready:   { dot: "#3fb950", text: "Editor connected",  title: "Vibbit can read and write your MakeCode project." },
     loading: { dot: "#d29922", text: "Editor loading\u2026", title: "MakeCode is open. Waiting for the JavaScript editor to load." },
+    blocks:  { dot: "#d29922", text: "Blocks view active", title: "Switch to the JavaScript tab in MakeCode so Vibbit can write code, or click here to re-check." },
     absent:  { dot: "#f85149", text: "No project open",   title: "Open a MakeCode project, then click here to re-check." }
+  };
+
+  /* MakeCode frequently keeps the JavaScript/Monaco editor mounted in the DOM
+     but hidden after switching to Blocks, rather than tearing it down. That
+     means a Monaco model can still be found even though Blocks is what the
+     student is actually looking at, and Send was staying enabled against a
+     hidden editor. This is a best-effort, multi-signal check: several ways of
+     telling the two views apart, first one that gives a clear answer wins. If
+     none do, we say so rather than guessing, and Send stays enabled -- a false
+     "you are in Blocks" would be worse than missing the real bug once. */
+  const isVisible = (el) => {
+    if (!el) return false;
+    try {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+      return style.display !== "none" && style.visibility !== "hidden";
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const detectActiveView = () => {
+    for (const ctx of monacoCandidateWindows()) {
+      const doc = ctx.document;
+      if (!doc || !doc.querySelectorAll) continue;
+
+      // Signal 1: an explicit toggle between "Blocks" and "JavaScript" tabs,
+      // wherever MakeCode marks the active one (aria-selected, .selected, .active).
+      try {
+        const tabs = [...doc.querySelectorAll("[role='tab'], .ui.item, button, [class*='menuitem']")]
+          .filter((el) => /^(blocks|javascript)$/i.test(String(el.textContent || "").trim()));
+        const active = tabs.find((el) =>
+          el.getAttribute("aria-selected") === "true"
+          || el.classList.contains("selected")
+          || el.classList.contains("active")
+          || el.classList.contains("current"));
+        if (active) return /javascript/i.test(active.textContent) ? "javascript" : "blocks";
+      } catch (error) {
+      }
+
+      // Signal 2: whichever editor surface is actually rendered and sized.
+      try {
+        const blocklyEl = doc.querySelector(".blocklyWorkspace, #blocksEditor, [class*='blocklySvg']");
+        const monacoEl = doc.querySelector(".monaco-editor");
+        const blocklyVisible = isVisible(blocklyEl);
+        const monacoVisible = isVisible(monacoEl);
+        if (blocklyVisible && !monacoVisible) return "blocks";
+        if (monacoVisible && !blocklyVisible) return "javascript";
+      } catch (error) {
+      }
+    }
+    return "unknown";
   };
 
   let editorState = "";
@@ -738,15 +838,32 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     editorPillText.textContent = conf.text;
     editorPill.title = conf.title;
     editorPill.style.borderColor = name === "ready" ? "#1f4d2c" : "#29324e";
+
+    // Sending against the Blocks view would act on a hidden/stale JS editor.
+    // Disabling Send here is a visible, honest signal rather than a silent
+    // failure discovered after the student has already waited for a generation.
+    if (go) {
+      const blocked = name === "blocks";
+      go.disabled = blocked;
+      go.style.opacity = blocked ? "0.5" : "";
+      go.style.cursor = blocked ? "not-allowed" : "pointer";
+      go.title = blocked ? "Switch to the JavaScript tab in MakeCode first." : "";
+    }
     const empty = chatMessagesEl.querySelector(".vibbit-empty-state");
     if (empty) renderEmptyState();
   };
 
   const refreshEditorState = () => {
     try {
-      if (probeMonacoCtx()) applyEditorState("ready");
-      else if (looksLikeProjectEditor()) applyEditorState("loading");
-      else applyEditorState("absent");
+      if (probeMonacoCtx()) {
+        // "unknown" deliberately falls through to ready: an inconclusive check
+        // must not block a student who is legitimately in the JS view.
+        applyEditorState(detectActiveView() === "blocks" ? "blocks" : "ready");
+      } else if (looksLikeProjectEditor()) {
+        applyEditorState("loading");
+      } else {
+        applyEditorState("absent");
+      }
     } catch (error) {
       applyEditorState("absent");
     }
@@ -1034,7 +1151,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     done: true,
     error: true,
     cancelled: true,
-    "convert-error": true
+    "convert-error": true,
+    socratic: true
   };
   const normaliseAssistantStatus = (status) => {
     const value = typeof status === "string" ? status : "";
@@ -1060,7 +1178,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     const out = { role: "assistant" };
-    out.status = normaliseAssistantStatus(msg.status);
+    // A socratic bubble is only meaningful live (its questions live in memory,
+    // not in the persisted shape below), so a reload mid-question must not
+    // restore a permanently unresolved spinner -- downgrade it to a plain,
+    // inert status instead.
+    out.status = msg.status === "socratic" ? "cancelled" : normaliseAssistantStatus(msg.status);
     out.actionsHidden = !!msg.actionsHidden;
 
     const content = clampStoredText(msg.content, CHAT_HISTORY_MAX_CONTENT_CHARS).trim();
@@ -1123,6 +1245,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (editorState === "ready" || !editorState) return "";
     const message = editorState === "loading"
       ? "MakeCode is open but the JavaScript editor has not loaded yet. Click the pill above, or open the JavaScript tab."
+      : editorState === "blocks"
+      ? "You're viewing Blocks. Switch to the JavaScript tab in MakeCode so Vibbit can write your code."
       : "Open a MakeCode project first. Vibbit needs the project editor, not the home page.";
     return '<div style="margin-top:4px;padding:9px 12px;border-radius:9px;border:1px solid #3d2f16;background:#1c1608;color:#d29922;font-size:12px;line-height:1.45;max-width:360px">'
       + escapeHTML(message) + '</div>';
@@ -1184,6 +1308,53 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       html += '<div class="vibbit-msg-error">' + escapeHTML(msg.content || "Something went wrong.") + '</div>';
     } else if (status === "cancelled") {
       html += '<div class="vibbit-msg-status">' + escapeHTML(msg.content || "Cancelled.") + '</div>';
+    } else if (status === "socratic") {
+      const soc = msg.socratic;
+      const idx = chatMessages.indexOf(msg);
+      if (!soc || !Array.isArray(soc.questions) || !soc.questions.length) {
+        html += '<div class="vibbit-msg-status" role="status" aria-live="polite">' + SPINNER_SMALL + ' Thinking of a couple of questions to test your prediction\u2026</div>';
+      } else {
+        const answered = soc.answered || {};
+        const total = soc.questions.length;
+        let stopAfter = false;
+        soc.questions.forEach(function (q, qi) {
+          if (stopAfter) return;
+          const picked = answered[q.id];
+          html += '<div style="margin-bottom:12px">';
+          html += '<div style="font-size:11px;color:#5a6d8f;margin-bottom:3px">Question ' + (qi + 1) + ' of ' + total + '</div>';
+          html += '<div style="font-size:13px;color:' + (picked ? "#8899bb" : "#c9d4f2") + ';margin-bottom:6px">' + escapeHTML(q.ask) + '</div>';
+          if (picked) {
+            const isCorrect = picked.id === q.correctOptionId;
+            const badgeColor = isCorrect ? "#7ee2a0" : "#e2a07e";
+            const badgeBg = isCorrect ? "#0f1d12" : "#1d140f";
+            html += '<div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;background:' + badgeBg + ';color:' + badgeColor + ';font-size:12px;margin-bottom:5px">'
+              + (isCorrect ? "\u2713 " : "\u2717 ") + escapeHTML(picked.label) + '</div>';
+            if (!isCorrect) {
+              const correctOpt = q.options.find(function (o) { return o.id === q.correctOptionId; });
+              if (correctOpt) {
+                html += '<div style="font-size:12px;color:#7ee2a0;margin-bottom:4px">Correct answer: ' + escapeHTML(correctOpt.label) + '</div>';
+              }
+            }
+            html += '<div style="font-size:12px;color:#9bb1dd;line-height:1.4">' + escapeHTML(q.explanation) + '</div>';
+            // Progressive reveal: only show the next question once this one's
+            // feedback has been read, same idea as before, minus any way out.
+          } else {
+            html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+            q.options.forEach(function (opt) {
+              html += '<button type="button" class="vibbit-chip" data-action="socratic-pick" data-msg-idx="' + idx
+                + '" data-qid="' + escapeHTML(q.id) + '" data-oid="' + escapeHTML(opt.id) + '">' + escapeHTML(opt.label) + '</button>';
+            });
+            html += '</div>';
+            stopAfter = true; // never reveal a future question before this one is answered
+          }
+          html += '</div>';
+        });
+        const allAnswered = soc.questions.every(function (q) { return answered[q.id]; });
+        if (allAnswered) {
+          html += '<button type="button" data-action="socratic-build" data-msg-idx="' + idx
+            + '" style="padding:8px 16px;border:none;border-radius:8px;background:#3454D1;color:#fff;font-weight:600;cursor:pointer;font-size:13px">Build it now</button>';
+        }
+      }
     } else if (status === "convert-error") {
       if (msg.feedback && msg.feedback.length) {
         msg.feedback.forEach(function (line) {
@@ -1251,6 +1422,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (action === "preview") enterPreview();
         if (action === "undo") handleRevert();
         if (action === "fix") handleFixConvert();
+        if (action === "socratic-pick") handleSocraticPick(Number(btn.dataset.msgIdx), btn.dataset.qid, btn.dataset.oid);
+        if (action === "socratic-build") proceedFromSocratic(Number(btn.dataset.msgIdx));
       });
     }
     if (shouldPersist) persistChatState();
@@ -1513,6 +1686,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   /* init empty state */
   renderEmptyState();
+  try { refreshSocraticControl(); } catch (error) {}
   restoreChatState();
 
   /* ── resolve effective backend URL ───────────────────────── */
@@ -1636,7 +1810,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   /* ── load saved state ────────────────────────────────────── */
   const savedMode = forceMode || coerceMode(storageGet(STORAGE_MODE) || "byok");
-  const savedProvider = storageGet(STORAGE_PROVIDER) || "openai";
+  const savedProvider = defaultProvider();
   const savedModel = storageGet(STORAGE_MODEL);
   const savedKey = getStoredProviderKey(savedProvider);
   const savedServer = storageGet(STORAGE_SERVER) || "";
@@ -1785,15 +1959,39 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     storageSet(STORAGE_THINK_HARDER, thinkHarder.checked ? "1" : "0");
   };
 
+  const setSocraticBox = $("#set-socratic");
+  if (setSocraticBox) {
+    setSocraticBox.onchange = () => {
+      storageSet(STORAGE_SOCRATIC, setSocraticBox.checked ? "1" : "0");
+    };
+  }
+
+  const saveConfirmEl = $("#save-confirm");
+  const saveConfirmBackBtn = $("#save-confirm-back");
+  const hideSaveConfirm = () => { if (saveConfirmEl) saveConfirmEl.style.display = "none"; };
+
   saveBtn.onclick = () => {
     try {
       setStoredProviderKey(setProv.value, setKey.value.trim());
       setStatus("Key saved");
       logLine("BYOK API key saved in this browser.");
+      if (saveConfirmEl) saveConfirmEl.style.display = "flex";
     } catch (error) {
       logLine("Save failed: " + error);
+      hideSaveConfirm();
     }
   };
+
+  // Editing the key after saving should hide a confirmation that no longer
+  // reflects the field's contents, not leave a stale "saved" message showing.
+  setKey.addEventListener("input", hideSaveConfirm);
+
+  if (saveConfirmBackBtn) {
+    saveConfirmBackBtn.onclick = () => {
+      hideSaveConfirm();
+      showView("main");
+    };
+  }
 
   setServer.onchange = () => {
     storageSet(STORAGE_SERVER, setServer.value.trim());
@@ -1814,7 +2012,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     storageSet(STORAGE_TARGET, setTarget.value);
   };
 
-  gearBtn.onclick = () => showView("settings");
+  gearBtn.onclick = () => { hideSaveConfirm(); showView("settings"); };
   backBtn.onclick = () => showView("main");
 
   /* ── close buttons ───────────────────────────────────────── */
@@ -2386,6 +2584,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     detectRequiredExtensions,
     extensionDependencies,
     buildExtensionPromptExtras,
+    buildSocraticPrompt,
+    parseSocraticOutput,
     buildAllExtensionPromptExtras,
     detectMissingCapability,
     buildSystemPrompt,
@@ -3558,6 +3758,89 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return lines;
     }
 
+
+    // ── Socratic mode ────────────────────────────────────────────────────────
+    // A prediction quiz, not a spec form. Each question asks the student to guess
+    // what a program would DO in a scenario tied to their request -- not to pick a
+    // design option. The point is testing and building their mental model of how
+    // the code behaves (event handlers, timing, state, edge cases), the way a
+    // teacher would probe understanding rather than just take dictation. Every
+    // question has one correct option and an explanation shown after any pick, so
+    // a wrong guess still teaches. No skip: the student answers every question
+    // before code is generated, and 2-3 is enough to be worthwhile without
+    // dragging the request out or wasting API budget on question after question.
+    const SOCRATIC_MIN_QUESTIONS = 2;
+    const SOCRATIC_MAX_QUESTIONS = 3;
+    const SOCRATIC_MAX_OPTIONS = 4;
+
+    function buildSocraticPrompt(target, requestHint = "") {
+      const request = String(requestHint || "").trim();
+      const lines = [
+        "The student wants help with this MakeCode " + target + " request:",
+        '"' + request.replace(/"/g, "'") + '"',
+        "",
+        "Before any code is written, quiz the student with " + SOCRATIC_MIN_QUESTIONS + "-" + SOCRATIC_MAX_QUESTIONS
+          + " multiple-choice questions that test how well they can predict what a program actually does --",
+        "NOT questions asking them to choose a design option. Phrase every question as a prediction:",
+        '"What do you think happens if ...?", "What value would ... hold after ...?", "What do you think the screen',
+        'shows if ... happens while ... is still running?"',
+        "",
+        "Ground every question in a real behaviour this specific request will involve: event handlers overlapping,",
+        "a variable's value after repeated changes, what happens at a boundary (0, the max, an empty case), timing",
+        "and pauses, or two things trying to happen at once. Make the student reason about it, not recall trivia.",
+        "",
+        "Every question needs ONE correct option (correctOptionId) and an explanation of why, written so it teaches",
+        "something whichever option the student picks -- this explanation is shown after their answer either way.",
+        "",
+        "Reply with ONLY this JSON shape, nothing else:",
+        '{"questions":[{"id":"q1","ask":"What do you think ... ?","options":[',
+        '  {"id":"a","label":"..."},',
+        '  {"id":"b","label":"..."}',
+        '],"correctOptionId":"b","explanation":"..."}]}',
+        "",
+        "Rules:",
+        "- " + SOCRATIC_MIN_QUESTIONS + " to " + SOCRATIC_MAX_QUESTIONS + " questions, at most " + SOCRATIC_MAX_OPTIONS + " options each.",
+        "- Ask about behaviour specific to this request. Never a generic or unrelated programming question.",
+        "- Never phrase a question as \"what should happen\" or \"which do you want\" -- always \"what do you think happens\".",
+        "- Every question must have a real correct answer, not a matter of preference.",
+        "- If this request genuinely has nothing worth predicting (extremely rare), return {\"questions\":[]}."
+      ];
+      return lines.join("\n");
+    }
+
+    // Salvage-safe like parseModelOutput: malformed output, or fewer than the
+    // minimum real questions, yields an empty list so the caller falls straight
+    // through to generation rather than showing a broken or too-short quiz.
+    function parseSocraticOutput(raw) {
+      const objects = parseJsonObjectsFromText(raw);
+      for (const parsed of objects) {
+        if (!parsed || !Array.isArray(parsed.questions)) continue;
+        const questions = [];
+        for (const q of parsed.questions.slice(0, SOCRATIC_MAX_QUESTIONS)) {
+          if (!q || typeof q.ask !== "string" || !q.ask.trim() || !Array.isArray(q.options)) continue;
+          if (typeof q.explanation !== "string" || !q.explanation.trim()) continue;
+          const options = [];
+          for (const opt of q.options.slice(0, SOCRATIC_MAX_OPTIONS)) {
+            if (!opt || typeof opt.label !== "string" || !opt.label.trim()) continue;
+            options.push({ id: String(opt.id || options.length), label: opt.label.trim() });
+          }
+          if (options.length < 2) continue;
+          const correctOptionId = String(q.correctOptionId || "");
+          if (!options.some((opt) => opt.id === correctOptionId)) continue;
+          questions.push({
+            id: String(q.id || ("q" + (questions.length + 1))),
+            ask: q.ask.trim(),
+            options,
+            correctOptionId,
+            explanation: q.explanation.trim()
+          });
+        }
+        if (questions.length < SOCRATIC_MIN_QUESTIONS) return { questions: [] };
+        return { questions };
+      }
+      return { questions: [] };
+    }
+
     function buildTargetPromptExtras(target) {
       if (target !== "microbit") return [];
       return [
@@ -4320,6 +4603,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       detectRequiredExtensions,
       extensionDependencies,
       buildExtensionPromptExtras,
+      buildSocraticPrompt,
+      parseSocraticOutput,
       buildAllExtensionPromptExtras,
       detectMissingCapability,
       buildSystemPrompt,
@@ -4414,7 +4699,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const syncBudgetToModel = () => {
     try {
-      const provider = storageGet(STORAGE_PROVIDER) || "openai";
+      const provider = defaultProvider();
       const model = storageGet(STORAGE_MODEL) || "";
       const preset = (MODEL_PRESETS[provider] || []).find((entry) => entry.id === model);
       if (preset && preset.freeRpd) DAILY_REQUEST_BUDGET = preset.freeRpd;
@@ -4769,6 +5054,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     );
   };
 
+  const PROVIDER_DISPLAY_NAMES = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
+
+  // One-shot call for the Socratic question round: no code validation loop,
+  // just "ask the model for MCQs, parse them". Reuses the same retry/backoff
+  // and usage counting as real generation, since it is a real API request and
+  // should count against the same daily budget.
+  const askSocraticQuestions = async (provider, apiKey, model, target, requestHint, signal) => {
+    const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
+    const callProvider = providers[provider] || providers.openai;
+    const providerName = PROVIDER_DISPLAY_NAMES[provider] || provider;
+    const system = "You are a MakeCode teaching assistant. Reply with ONLY the JSON requested. No prose, no markdown fences.";
+    const user = buildSocraticPrompt(target, requestHint);
+
+    logLine("Asking " + providerName + " for guided questions.");
+    if (CLASS_JITTER_MS > 0) await waitWithAbort(classJitter(), signal);
+    const raw = await withTransientRetry(() => callProvider(apiKey, model, system, user, signal), signal);
+    return parseSocraticOutput(raw);
+  };
+
   const askValidated = (provider, apiKey, model, system, user, target, signal) => {
     const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
     const names = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
@@ -5030,8 +5334,107 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   /* ── generate handler ────────────────────────────────────── */
+  /* ── Socratic mode flow ─────────────────────────────────────
+     Runs before generation, only for a fresh student-typed prompt (never for
+     the fix-conversion retry, which passes forcedRequestOverride and bypasses
+     this entirely -- see the gate at the top of sendMessage). */
+  const removeChatMessage = (idx) => {
+    if (idx !== chatMessages.length - 1) return; // only ever remove the tail
+    chatMessages.pop();
+    const wrapper = chatMessageEls.pop();
+    if (wrapper && wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+  };
+
+  const proceedFromSocratic = (idx) => {
+    const msg = chatMessages[idx];
+    if (!msg || !msg.socratic) return;
+    const original = msg.socratic.request;
+
+    // The student's picks may have been wrong -- what the generated code
+    // should actually do is whatever the explanation described, not
+    // necessarily what they guessed. Feed the correct behaviour, not the
+    // answer, so a wrong guess teaches the student without misbuilding the code.
+    const notes = msg.socratic.questions.map((q) => "- " + q.ask + " " + q.explanation);
+    const enriched = notes.length
+      ? original + "\n\nBuild the program so it actually behaves like this (from a quick understanding check with the student):\n" + notes.join("\n")
+      : original;
+
+    updateAssistantMessage(idx, {
+      status: "cancelled",
+      content: "Thanks \u2014 building it now.",
+      socratic: null,
+      actionsHidden: true
+    });
+    sendMessage(enriched);
+  };
+
+  const handleSocraticPick = (idx, qid, oid) => {
+    const msg = chatMessages[idx];
+    if (!msg || !msg.socratic) return;
+    const question = msg.socratic.questions.find((q) => q.id === qid);
+    const option = question && question.options.find((o) => o.id === oid);
+    if (!option) return;
+    if (msg.socratic.answered[qid]) return; // an answer already given is final
+    msg.socratic.answered[qid] = option;
+    // Re-render only: reveals the correct/incorrect feedback for this question
+    // and, once every question has an answer, the "Build it now" button. The
+    // student reads the last explanation before code generates, not the
+    // instant they click.
+    updateAssistantMessage(idx, {}, { persist: false });
+  };
+
+  const beginSocraticFlow = async (request) => {
+    addChatMessage({ role: "user", content: request });
+    promptEl.value = "";
+    promptEl.style.height = "auto";
+
+    const mode = storageGet(STORAGE_MODE) || "byok";
+
+    // Managed mode's question round needs a small backend endpoint that does
+    // not exist yet (the client only ever calls /vibbit/generate). Rather than
+    // fake it, fall straight through to normal generation so Managed mode keeps
+    // working exactly as before until that endpoint is built.
+    if (mode === "managed") {
+      sendMessage(request);
+      return;
+    }
+
+    const provider = defaultProvider();
+    const apiKey = getStoredProviderKey(provider).trim();
+    const model = storageGet(STORAGE_MODEL) || "";
+    if (!apiKey) {
+      // Let the real generation call raise its usual "enter an API key" error
+      // rather than duplicating that message here.
+      sendMessage(request);
+      return;
+    }
+
+    const thinkingIdx = addChatMessage({ role: "assistant", status: "socratic", socratic: { questions: [], answered: {}, request } });
+    const controller = new AbortController();
+
+    try {
+      const result = await askSocraticQuestions(provider, apiKey, model, storageGet(STORAGE_TARGET) || "microbit", request, controller.signal);
+      if (!result.questions.length) {
+        removeChatMessage(thinkingIdx);
+        sendMessage(request);
+        return;
+      }
+      updateAssistantMessage(thinkingIdx, { socratic: { questions: result.questions, answered: {}, request } });
+    } catch (error) {
+      // A failed question round must never block the student from building
+      // something -- fall straight through to normal generation.
+      removeChatMessage(thinkingIdx);
+      logLine("Guided questions failed (" + ((error && error.message) || error) + "); generating directly.");
+      sendMessage(request);
+    }
+  };
+
   const sendMessage = (forcedRequestOverride, forcedDialogOverride) => {
     if (busy) return;
+    if (!forcedRequestOverride && socraticEnabled()) {
+      const draft = (promptEl.value || "").trim();
+      if (draft) { beginSocraticFlow(draft); return; }
+    }
     stopLoadingTicker();
 
     const request = forcedRequestOverride || (promptEl.value || "").trim();
@@ -5173,7 +5576,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             }, signal);
           }
 
-          const provider = storageGet(STORAGE_PROVIDER) || "openai";
+          const provider = defaultProvider();
           const apiKey = getStoredProviderKey(provider).trim();
           if (!apiKey) throw new Error("Enter API key for BYOK mode (open Settings).");
           const model = storageGet(STORAGE_MODEL) || "";
