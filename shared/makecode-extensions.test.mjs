@@ -374,8 +374,16 @@ test("regenerate/redo phrasing is classified as regenerate", () => {
 
 test("add-a-feature phrasing is classified as feature-add", () => {
   assert.equal(classifyFollowUpRequest("can you also add a button that plays a sound"), "feature-add");
+  assert.equal(classifyFollowUpRequest("can i add a button that plays a sound"), "feature-add");
   assert.equal(classifyFollowUpRequest("now add a light feature"), "feature-add");
   assert.equal(classifyFollowUpRequest("extend it to also show the time"), "feature-add");
+});
+
+test("Socratic prompt tells the model not to re-ask what the request already answers", () => {
+  const prompt = buildSocraticPrompt("microbit", "x");
+  assert.match(prompt, /patronising/);
+  assert.match(prompt, /already states explicitly/i);
+  assert.doesNotMatch(prompt, /extremely rare/);
 });
 
 test("a plain new-build request, and an unrelated use of 'add', both classify as fresh", () => {

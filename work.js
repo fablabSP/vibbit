@@ -3833,7 +3833,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         "- Never ask about a scenario the code you will build cannot actually produce.",
         "- Never state a technical claim you are not confident is true of the real platform.",
         "- Every question must have a real correct answer, not a matter of preference.",
-        "- If this request genuinely has nothing worth predicting (extremely rare), return {\"questions\":[]}."
+        "- If a good question would just be re-asking something the request ALREADY states explicitly (a named",
+        "  behaviour, an exact mechanism, a specific edge case the student called out themselves), do not ask it.",
+        "  A student who already wrote \"make sure it acts like a held key, not a single press\" has already answered",
+        "  the tap-vs-hold question -- asking it back to them is patronising, not Socratic.",
+        "- If everything worth predicting is already explicitly specified in the request, return {\"questions\":[]}",
+        "  rather than inventing a weaker question just to have one."
       ];
       return lines.join("\n");
     }
@@ -3882,7 +3887,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     // needs to run before any model call, at zero cost, the same way extension
     // detection does.
     const FOLLOWUP_REGENERATE_RE = /\b(regenerate|re-generate|redo|start over|do it again|try again|retry|rebuild (?:it|this)|fix (?:it|this)|redo (?:it|this|the code)|that('?s| is) (?:not|n't) (?:right|working)|not working|broken)\b/i;
-    const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can you add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
+    const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can (?:you|i) add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
 
     // Returns "regenerate" | "feature-add" | "fresh". Callers with conversation
     // state (does this chat have prior turns at all?) should treat "fresh" as the
@@ -5463,13 +5468,33 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     updateAssistantMessage(idx, {}, { persist: false });
   };
 
+  /* A request can already read like a spec rather than an idea -- naming exact
+     mechanisms, explicitly calling out the tricky edge case a good Socratic
+     question would normally probe ("make sure it acts like a held key, not a
+     tap"). Quizzing on something the student already answered themselves is
+     not Socratic, it is just friction, and it also burns an API request for
+     nothing. This is a cheap, local, deliberately approximate check -- a false
+     negative just means the model gets asked (and the softened prompt rule
+     above still lets IT skip questions too); a false positive costs one
+     slightly-too-generous skip, which is a fine trade against never bothering
+     someone who has clearly already thought it through. */
+  const ALREADY_SPECIFIED_RE = /\b(ensure|make sure|simulat(?:e|ing|ed)|so that|should (?:act|behave|work|be)|must (?:be|act|behave)|exactly|specifically|press(?:ed)? and hold|held down|hold(?:ing)? down|acts? like a|behaves? like|not (?:a|just) (?:a )?(?:single|one-?time) (?:press|tap|click))\b/i;
+  const looksAlreadySpecified = (text) => {
+    const value = String(text || "").trim();
+    if (value.length < 60) return false; // too short to plausibly cover an edge case
+    if (!ALREADY_SPECIFIED_RE.test(value)) return false;
+    const concreteItems = (value.match(/,|\band\b/gi) || []).length;
+    return concreteItems >= 2; // names several distinct specifics, not just one aside
+  };
+
   const beginSocraticFlow = async (request) => {
     // A follow-up only counts as a follow-up if there is something to follow
     // up ON. Checked before this turn is added to chatMessages, so the very
     // first message of a session is never misread as a "redo" just because it
     // happens to contain a word like "fix" or "add".
     const hasPriorTurn = chatMessages.length > 0 && !freshStartOnNextSend;
-    const followUpKind = hasPriorTurn ? classifyFollowUpRequest(request) : "fresh";
+    let followUpKind = hasPriorTurn ? classifyFollowUpRequest(request) : "fresh";
+    if (followUpKind === "fresh" && looksAlreadySpecified(request)) followUpKind = "already-specified";
 
     addChatMessage({ role: "user", content: request });
     promptEl.value = "";
@@ -5483,7 +5508,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       // the matching "fix in place" / "extend, don't rewrite" instruction.
       logLine(followUpKind === "regenerate"
         ? "Detected a regenerate/redo request \u2014 skipping guided questions."
-        : "Detected a feature request \u2014 skipping guided questions, extending existing code.");
+        : followUpKind === "feature-add"
+        ? "Detected a feature request \u2014 skipping guided questions, extending existing code."
+        : "Request already specifies the tricky details \u2014 skipping guided questions.");
       sendMessage(request);
       return;
     }

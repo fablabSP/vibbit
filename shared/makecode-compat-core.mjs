@@ -1262,7 +1262,12 @@ export function buildSocraticPrompt(target, requestHint = "") {
     "- Never ask about a scenario the code you will build cannot actually produce.",
     "- Never state a technical claim you are not confident is true of the real platform.",
     "- Every question must have a real correct answer, not a matter of preference.",
-    "- If this request genuinely has nothing worth predicting (extremely rare), return {\"questions\":[]}."
+    "- If a good question would just be re-asking something the request ALREADY states explicitly (a named",
+    "  behaviour, an exact mechanism, a specific edge case the student called out themselves), do not ask it.",
+    "  A student who already wrote \"make sure it acts like a held key, not a single press\" has already answered",
+    "  the tap-vs-hold question -- asking it back to them is patronising, not Socratic.",
+    "- If everything worth predicting is already explicitly specified in the request, return {\"questions\":[]}",
+    "  rather than inventing a weaker question just to have one."
   ];
   return lines.join("\n");
 }
@@ -1311,7 +1316,7 @@ export function parseSocraticOutput(raw) {
 // needs to run before any model call, at zero cost, the same way extension
 // detection does.
 const FOLLOWUP_REGENERATE_RE = /\b(regenerate|re-generate|redo|start over|do it again|try again|retry|rebuild (?:it|this)|fix (?:it|this)|redo (?:it|this|the code)|that('?s| is) (?:not|n't) (?:right|working)|not working|broken)\b/i;
-const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can you add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
+const FOLLOWUP_FEATURE_ADD_RE = /\b(add(?:\s+(?:a|an|another|in|on))?\s+\w*\s*(?:feature|button|sound|light|sensor|option|function|block|mode)|also add|can (?:you|i) add|now add|include (?:a|an)|extend (?:it|this|the code)|on top of (?:that|this|it)|one more (?:thing|feature)|and also(?: add)?)\b/i;
 
 // Returns "regenerate" | "feature-add" | "fresh". Callers with conversation
 // state (does this chat have prior turns at all?) should treat "fresh" as the
