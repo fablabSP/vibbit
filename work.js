@@ -5745,6 +5745,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           throwIfAborted(signal);
           finalFeedback = normaliseFeedback(result && result.feedback);
 
+          // Hardware warnings (pin clashes, missing radio.setGroup, servo angle
+          // out of range, ...) were computed by the validator this whole time
+          // but never actually reached the student -- the result object had
+          // them, nothing ever read them. Fold them into feedback so they show
+          // up where the student is already looking, right under the code.
+          const hwWarnings = result && result.validation && Array.isArray(result.validation.warnings)
+            ? result.validation.warnings
+            : [];
+          if (hwWarnings.length) {
+            finalFeedback = normaliseFeedback([
+              ...finalFeedback,
+              ...hwWarnings.map((w) => "\u26a0\ufe0f " + w)
+            ]);
+          }
+
           const code = extractCode(result && result.code ? result.code : "");
           lastGeneratedCode = code;
           lastGeneratePassedOracle = generatePassedStaticOracle(result, code);
