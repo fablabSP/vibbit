@@ -45,13 +45,22 @@ about two minutes, and does **not** need a credit card.
 
 Go to <https://aistudio.google.com/apikey> and sign in with your Google account.
 
+
 **2. Create the key**
 
 Click **Create API key**. If it asks you to pick a project, choose the default
 one it offers.
 
+<img width="1898" height="1012" alt="image" src="https://github.com/user-attachments/assets/9d159cd5-9322-43c1-8458-5b40f2874034" />
+
+<img width="1443" height="169" alt="image" src="https://github.com/user-attachments/assets/f4b79d78-ed25-465e-8562-6eecdbf9ec82" />
+
+<img width="517" height="285" alt="image" src="https://github.com/user-attachments/assets/75b7fcb3-56ca-4f61-bcce-9e7f2c7a6f68" />
+
 **3. Copy it**
 
+
+<img width="518" height="486" alt="image" src="https://github.com/user-attachments/assets/b231c6ee-b3e5-49d8-858c-7ed4d2ee3295" />
 You'll get a long string starting with `AIza...`. Click the copy button.
 
 **4. Keep it private**
@@ -87,7 +96,7 @@ hard.
 **1. Get the extension files**
 
 Download `vibbit-extension.zip` from the
-[Releases page](https://github.com/lg2113/vibbit/releases), then unzip it.
+[Releases page](https://github.com/fablabSP/vibbit/releases), then unzip it.
 You should end up with a folder containing `manifest.json`.
 
 **2. Open Chrome's extensions page**
