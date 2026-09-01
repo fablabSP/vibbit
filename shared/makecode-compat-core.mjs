@@ -1043,7 +1043,8 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
       "micro:bit V2 only. Say so in the feedback so the student checks their board.",
       "The project must be built with Project Settings > No Pairing Required: Anyone can connect via Bluetooth. Say this in the feedback.",
       "Call the start...Service() function ONCE as a top-level statement, then basic.pause(500) before sending anything.",
-      "The host computer must pair with the micro:bit before keystrokes arrive."
+      "The host computer must pair with the micro:bit before keystrokes arrive.",
+      "Bluetooth and radio cannot run on the same micro:bit -- adding Bluetooth removes the radio blocks entirely (real hardware limit, not a style choice). If the request also wants radio/multiplayer between micro:bits, say clearly in feedback that only one of the two is possible and pick Bluetooth."
     ],
     example: [
       "keyboard.startKeyboardService()",
@@ -1072,7 +1073,10 @@ const HARDWARE_WARNINGS = [
     warn: "NeoPixel on P0 clashes with the built-in speaker on micro:bit V2. Prefer P1 or P2."
   },
   {
-    when: (code) => /pins\.servoWritePin\s*\(\s*AnalogPin\.P0\b/.test(code),
+    // Skips when sound is also present -- the dedicated sound+servo rule below
+    // gives a clearer, more specific message for that case. No need to say the
+    // same thing twice.
+    when: (code) => /pins\.servoWritePin\s*\(\s*AnalogPin\.P0\b/.test(code) && !/\bmusic\.(playTone|ringTone|play|playMelody|beat)\s*\(/.test(code),
     warn: "Servo on P0 clashes with the built-in speaker on micro:bit V2. Prefer P1 or P2."
   },
   {
@@ -1095,6 +1099,22 @@ const HARDWARE_WARNINGS = [
       return Boolean(match) && match[1] === match[2];
     },
     warn: "sonar.ping trig and echo are on the same pin. They must be two different pins."
+  },
+  {
+    when: (code) => {
+      const usesSound = /\bmusic\.(playTone|ringTone|play|playMelody|beat)\s*\(/.test(code);
+      const servoOnP0 = /pins\.servoWritePin\s*\(\s*AnalogPin\.P0\b/.test(code);
+      return usesSound && servoOnP0;
+    },
+    warn: "Sound and a servo are both on P0. The micro:bit's default speaker output IS pin P0, so a servo signal there will fight with the audio. Move the servo to P1 or P2, or move sound off P0 with pins.analogSetPitchPin(AnalogPin.P1)."
+  },
+  {
+    // Real hardware limit, not a guess: adding the Bluetooth extension in
+    // MakeCode physically removes the radio blocks from the project, because
+    // the radio chip can only run one protocol stack at a time. A program
+    // using both is not "risky", it is not buildable on real hardware.
+    when: (code) => /\b(keyboard|mouse|media)\.\w+Service\s*\(/.test(code) && /\bradio\./.test(code),
+    warn: "This project uses both Bluetooth (keyboard/mouse/media) and radio. They cannot run together on one micro:bit -- adding Bluetooth removes the radio blocks entirely. Pick one: Bluetooth to talk to a computer, or radio to talk to other micro:bits."
   },
   {
     when: (code) => /function\s*\([^)]*\)\s*\{[\s\S]*?neopixel\.create\s*\(/.test(code),

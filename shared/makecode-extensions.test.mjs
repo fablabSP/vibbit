@@ -439,3 +439,41 @@ test("the retry hint for randint now points at Math.randomRange", () => {
   const prompt = buildSystemPrompt("microbit", {});
   assert.match(prompt, /randint\(\.\.\.\) \(use Math\.randomRange/);
 });
+
+/* ── guardrails: sound+servo pin clash, bluetooth+radio conflict ────────── */
+
+test("sound and servo sharing P0 gives one specific warning, not the generic one too", () => {
+  const code = "music.playTone(262, music.beat(BeatFraction.Half))\npins.servoWritePin(AnalogPin.P0, 90)";
+  const result = runValidateBlocks(code, "microbit");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /Sound and a servo are both on P0/);
+});
+
+test("servo alone on P0 (no sound) still gets the generic speaker-clash warning", () => {
+  const result = runValidateBlocks("pins.servoWritePin(AnalogPin.P0, 90)", "microbit");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /clashes with the built-in speaker/);
+});
+
+test("sound and servo on different pins produce no warning", () => {
+  const code = "music.playTone(262, music.beat(BeatFraction.Half))\npins.servoWritePin(AnalogPin.P1, 90)";
+  assert.deepEqual(runValidateBlocks(code, "microbit").warnings, []);
+});
+
+test("bluetooth (keyboard/mouse/media service) with radio warns they cannot coexist", () => {
+  const code = "keyboard.startKeyboardService()\nradio.setGroup(1)\nradio.sendNumber(1)";
+  const result = runValidateBlocks(code, "microbit");
+  assert.ok(result.warnings.some((w) => /cannot run together on one micro:bit/.test(w)));
+});
+
+test("bluetooth alone, or radio alone, gives no bluetooth/radio conflict warning", () => {
+  const bleOnly = runValidateBlocks("keyboard.startKeyboardService()\nbasic.pause(500)", "microbit");
+  assert.ok(!bleOnly.warnings.some((w) => /cannot run together/.test(w)));
+  const radioOnly = runValidateBlocks("radio.setGroup(1)\nradio.sendNumber(1)", "microbit");
+  assert.ok(!radioOnly.warnings.some((w) => /cannot run together/.test(w)));
+});
+
+test("the blehid extension's own rules mention the radio conflict for the model", () => {
+  const extras = buildExtensionPromptExtras("microbit", "send a keypress over bluetooth and also broadcast to another microbit with radio").join("\n");
+  assert.match(extras, /Bluetooth and radio cannot run on the same micro:bit/);
+});
