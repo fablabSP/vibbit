@@ -61,6 +61,8 @@ one it offers.
 
 
 <img width="518" height="486" alt="image" src="https://github.com/user-attachments/assets/b231c6ee-b3e5-49d8-858c-7ed4d2ee3295" />
+
+
 You'll get a long string starting with `AIza...`. Click the copy button.
 
 **4. Keep it private**
