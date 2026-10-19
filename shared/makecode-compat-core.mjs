@@ -235,7 +235,8 @@ function parseJsonObjectsFromText(raw) {
 
 function isModelOutputObject(parsed) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-  return Object.prototype.hasOwnProperty.call(parsed, "code");
+  return Object.prototype.hasOwnProperty.call(parsed, "code")
+    || Array.isArray(parsed.questions);
 }
 
 export function extractCode(raw) {
@@ -303,6 +304,7 @@ export function parseModelOutput(raw) {
       : (parsed.feedback == null ? [] : [parsed.feedback]);
     return {
       feedback: normaliseFeedback(rawFeedback),
+      questions: normaliseFeedback(Array.isArray(parsed.questions) ? parsed.questions : []).slice(0, 3),
       code: extractCode(parsed.code == null ? "" : String(parsed.code))
     };
   }
@@ -319,7 +321,7 @@ export function parseModelOutput(raw) {
     };
   }
 
-  return { feedback: [], code: extractCode(raw) };
+  return { feedback: [], questions: [], code: extractCode(raw) };
 }
 
 const MICROBIT_ICON_NAMES = [
@@ -1529,6 +1531,27 @@ const BLOCK_UNSAFE_RULES = [
   "basic.onStart(...) (write startup code at the top level instead)."
 ];
 
+// Do exactly what was asked. Students learn from code they can read end to end;
+// every unrequested sound, animation or variable is something they did not
+// choose and cannot explain.
+const SCOPE_RULES = [
+  "",
+  "SCOPE:",
+  "- Build ONLY what the student asked for. Do not add extra features, sounds, animations, scores, buttons, pins or sensors they did not mention.",
+  "- If an optional improvement seems useful, put it in one feedback line as a suggestion (\"You could also ...\"). Never put it in the code."
+];
+
+// Ask instead of guess. Sits in the same call as generation, so a clear request
+// costs no extra API request.
+const CLARIFY_RULES = [
+  "",
+  "CLARIFYING QUESTIONS:",
+  "- If the request is missing something that would change the program (which button or pin, how many, what should happen when, which sensor or output), ask instead of guessing.",
+  "- To ask, reply with {\"questions\":[\"question 1\",\"question 2\"],\"feedback\":[],\"code\":\"\"} and nothing else. Maximum 3 short, plain-language questions, one thing per question.",
+  "- Do NOT ask about things you can reasonably default (animation speed, which icon, exact wording). Do NOT ask when RECENT_CHAT shows you already asked and the student answered: build it now, defaulting anything still open.",
+  "- Do NOT ask when CURRENT_CODE exists and the request is a clear small change to it."
+];
+
 const OUTPUT_FORMAT_RULES = [
   "Return ONLY one compact JSON object: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}.",
   "feedback is an array of one or more short, friendly strings.",
@@ -1579,7 +1602,9 @@ export function buildSystemPrompt(target, options = {}) {
     lines.push("", "CONVERSATION: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state. If CURRENT_CODE is truncated, make conservative edits and preserve existing patterns.");
     const followUpExtras = followUpPromptExtras(followUpKind);
     if (followUpExtras.length) lines.push(...followUpExtras);
+    lines.push(...CLARIFY_RULES);
   }
+  lines.push(...SCOPE_RULES);
 
   // 4. Output contract
   lines.push("", "OUTPUT FORMAT:");
@@ -1939,6 +1964,7 @@ export async function runGenerationLoop({
   validationRetries = 0,
   truncationRetries = 1,
   capabilityRetries = 1,
+  allowClarify = false,
   maxAttempts = 1,
   callModel,
   runDecompile
@@ -1972,7 +1998,12 @@ export async function runGenerationLoop({
     const code = sanitizeMakeCode(parsed.code);
     const validation = runValidateBlocks(code, target);
     // Empty source can pass the static validator; treat it as empty, not ok.
-    let reason = !String(code || "").trim()
+    const wantsClarify = allowClarify
+      && Array.isArray(parsed.questions) && parsed.questions.length > 0
+      && !String(code || "").trim();
+    let reason = wantsClarify
+      ? "clarify"
+      : !String(code || "").trim()
       ? "empty"
       : (validation.ok ? "ok" : "invalid");
     // A salvaged-but-truncated reply may still pass the static validator while
@@ -2001,11 +2032,12 @@ export async function runGenerationLoop({
       validation,
       reason,
       decompile,
-      truncated: Boolean(parsed.truncated)
+      truncated: Boolean(parsed.truncated),
+      questions: wantsClarify ? parsed.questions : []
     };
     attempts.push(last);
 
-    if (reason === "ok") break;
+    if (reason === "ok" || reason === "clarify") break;
     if (attempts.length >= attemptLimit) break;
 
     if (reason === "capability" && capabilityLeft > 0) {
@@ -2082,6 +2114,18 @@ export async function runGenerationLoop({
       validation: lastValidation,
       upstreamAttempts,
       outcome: "ok",
+      attempts
+    };
+  }
+
+  if (last && last.reason === "clarify") {
+    return {
+      code: "",
+      feedback: [],
+      questions: last.questions,
+      validation: lastValidation,
+      upstreamAttempts,
+      outcome: "clarify",
       attempts
     };
   }

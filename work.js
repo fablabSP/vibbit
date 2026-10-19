@@ -391,7 +391,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '    </div>'
     + '    <div id="save-confirm" style="display:none;margin-top:8px;padding:9px 12px;border-radius:8px;border:1px solid #1f4d2c;background:#0f1d12;color:#7ee2a0;font-size:12px;align-items:center;justify-content:space-between;gap:10px">'
     + '      <span>\u2713 Key saved.</span>'
-    + '      <button id="save-confirm-back" type="button" style="padding:5px 11px;border-radius:7px;border:1px solid #1f4d2c;background:transparent;color:#7ee2a0;font-size:12px;cursor:pointer;font-family:inherit">Back to chat</button>'
+    + '      <button id="save-confirm-back" type="button" style="padding:5px 11px;border-radius:7px;border:1px solid #1f4d2c;background:transparent;color:#7ee2a0;font-size:12px;cursor:pointer;font-family:inherit">Back to Vibbit</button>'
     + '    </div>'
     + '  </div>'
 
@@ -741,6 +741,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   /* ── state ───────────────────────────────────────────────── */
   let undoStack = [];
+  // Students can step back through the last two versions of their code.
+  const MAX_VERSIONS = 2;
   let busy = false;
   let logsCollapsed = true;
   let feedbackCollapsed = false;
@@ -769,7 +771,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const EDITOR_STATES = {
     ready:   { dot: "#3fb950", text: "Editor connected",  title: "Vibbit can read and write your MakeCode project." },
     loading: { dot: "#d29922", text: "Editor loading\u2026", title: "MakeCode is open. Waiting for the JavaScript editor to load." },
-    blocks:  { dot: "#d29922", text: "Blocks view active", title: "Switch to the JavaScript tab in MakeCode so Vibbit can write code, or click here to re-check." },
+    blocks:  { dot: "#d29922", text: "Blocks view active", title: "Go into the JavaScript tab in MakeCode first, then come back to Vibbit. Click here to re-check." },
     absent:  { dot: "#f85149", text: "No project open",   title: "Open a MakeCode project, then click here to re-check." }
   };
 
@@ -847,7 +849,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       go.disabled = blocked;
       go.style.opacity = blocked ? "0.5" : "";
       go.style.cursor = blocked ? "not-allowed" : "pointer";
-      go.title = blocked ? "Switch to the JavaScript tab in MakeCode first." : "";
+      go.title = blocked ? "Go into the JavaScript tab in MakeCode first, then come back to Vibbit." : "";
     }
     const empty = chatMessagesEl.querySelector(".vibbit-empty-state");
     if (empty) renderEmptyState();
@@ -1103,6 +1105,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const refreshRevertButton = () => {};
+  const undoLabel = () => undoStack.length > 1
+    ? "Undo (" + undoStack.length + " old versions saved)"
+    : "Undo (1 old version saved)";
 
   /* ── chat rendering ────────────────────────────────────── */
   const CHAT_HISTORY_SCHEMA_VERSION = 1;
@@ -1148,6 +1153,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
   const ALLOWED_ASSISTANT_STATUSES = {
     generating: true,
+    asking: true,
     done: true,
     error: true,
     cancelled: true,
@@ -1246,7 +1252,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const message = editorState === "loading"
       ? "MakeCode is open but the JavaScript editor has not loaded yet. Click the pill above, or open the JavaScript tab."
       : editorState === "blocks"
-      ? "You're viewing Blocks. Switch to the JavaScript tab in MakeCode so Vibbit can write your code."
+      ? "You're on the Blocks view. Go into the JavaScript tab in MakeCode first, then come back to Vibbit."
       : "Open a MakeCode project first. Vibbit needs the project editor, not the home page.";
     return '<div style="margin-top:4px;padding:9px 12px;border-radius:9px;border:1px solid #3d2f16;background:#1c1608;color:#d29922;font-size:12px;line-height:1.45;max-width:360px">'
       + escapeHTML(message) + '</div>';
@@ -1300,12 +1306,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         html += '<div class="vibbit-msg-actions">';
         html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
         if (undoStack.length > 0) {
-          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+          html += '<button class="vibbit-btn-undo" data-action="undo">' + undoLabel() + '</button>';
         }
         html += '</div>';
       }
     } else if (status === "error") {
       html += '<div class="vibbit-msg-error">' + escapeHTML(msg.content || "Something went wrong.") + '</div>';
+    } else if (status === "asking") {
+      (msg.feedback || []).forEach(function (line) {
+        html += '<div class="vibbit-feedback-line">\u2753 ' + escapeHTML(line) + '</div>';
+      });
+      html += '<div class="vibbit-msg-status">Type your answers below and press Send. Nothing was changed in MakeCode.</div>';
     } else if (status === "cancelled") {
       html += '<div class="vibbit-msg-status">' + escapeHTML(msg.content || "Cancelled.") + '</div>';
     } else if (status === "socratic") {
@@ -1325,17 +1336,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           html += '<div style="font-size:13px;color:' + (picked ? "#8899bb" : "#c9d4f2") + ';margin-bottom:6px">' + escapeHTML(q.ask) + '</div>';
           if (picked) {
             const isCorrect = picked.id === q.correctOptionId;
-            const badgeColor = isCorrect ? "#7ee2a0" : "#e2a07e";
-            const badgeBg = isCorrect ? "#0f1d12" : "#1d140f";
-            html += '<div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;background:' + badgeBg + ';color:' + badgeColor + ';font-size:12px;margin-bottom:5px">'
-              + (isCorrect ? "\u2713 " : "\u2717 ") + escapeHTML(picked.label) + '</div>';
+            const badgeColor = isCorrect ? "#7ee2a0" : "#f0b27a";
+            const badgeBg = isCorrect ? "#12301c" : "#33200f";
+            const badgeEdge = isCorrect ? "#2fbf5f" : "#e08a3c";
+            html += '<div style="display:block;padding:8px 12px;border-radius:8px;background:' + badgeBg + ';border:1px solid ' + badgeEdge + ';border-left:4px solid ' + badgeEdge + ';color:' + badgeColor + ';font-size:13px;margin-bottom:6px">'
+              + '<span style="font-weight:700;letter-spacing:.02em">Your answer: </span>'
+              + '<span style="font-weight:700">' + (isCorrect ? "\u2713 " : "\u2717 ") + escapeHTML(picked.label) + '</span></div>';
             if (!isCorrect) {
               const correctOpt = q.options.find(function (o) { return o.id === q.correctOptionId; });
               if (correctOpt) {
-                html += '<div style="font-size:12px;color:#7ee2a0;margin-bottom:4px">Correct answer: ' + escapeHTML(correctOpt.label) + '</div>';
+                html += '<div style="font-size:13px;color:#7ee2a0;margin-bottom:5px"><span style="font-weight:700">Correct answer: </span><span style="font-weight:700">' + escapeHTML(correctOpt.label) + '</span></div>';
               }
             }
-            html += '<div style="font-size:12px;color:#9bb1dd;line-height:1.4">' + escapeHTML(q.explanation) + '</div>';
+            html += '<div style="font-size:12px;color:#9bb1dd;line-height:1.4"><span style="font-weight:700;color:#c9d4f2">Why: </span>' + escapeHTML(q.explanation) + '</div>';
             // Progressive reveal: only show the next question once this one's
             // feedback has been read, same idea as before, minus any way out.
           } else {
@@ -1366,7 +1379,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         html += '<div class="vibbit-msg-actions">';
         html += '<button class="vibbit-btn-fix" data-action="fix">Fix conversion</button>';
         if (undoStack.length > 0) {
-          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+          html += '<button class="vibbit-btn-undo" data-action="undo">' + undoLabel() + '</button>';
         }
         html += '</div>';
       }
@@ -1976,6 +1989,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       setStatus("Key saved");
       logLine("BYOK API key saved in this browser.");
       if (saveConfirmEl) saveConfirmEl.style.display = "flex";
+      if (saveConfirmBackBtn) {
+        saveConfirmBackBtn.textContent = editorState === "blocks"
+          ? "Go into JavaScript first, then back to Vibbit"
+          : "Back to Vibbit";
+      }
     } catch (error) {
       logLine("Save failed: " + error);
       hideSaveConfirm();
@@ -2486,7 +2504,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (shouldSnapshot) {
           try {
             const previous = ctx.model.getValue() || "";
-            undoStack.push(previous);
+            if (previous && previous !== undoStack[undoStack.length - 1]) {
+              undoStack.push(previous);
+              while (undoStack.length > MAX_VERSIONS) undoStack.shift();
+            }
             refreshRevertButton();
             logLine("Snapshot saved for revert.");
           } catch (error) {
@@ -2806,7 +2827,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     function isModelOutputObject(parsed) {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-      return Object.prototype.hasOwnProperty.call(parsed, "code");
+      return Object.prototype.hasOwnProperty.call(parsed, "code")
+        || Array.isArray(parsed.questions);
     }
 
     function extractCode(raw) {
@@ -2874,6 +2896,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           : (parsed.feedback == null ? [] : [parsed.feedback]);
         return {
           feedback: normaliseFeedback(rawFeedback),
+          questions: normaliseFeedback(Array.isArray(parsed.questions) ? parsed.questions : []).slice(0, 3),
           code: extractCode(parsed.code == null ? "" : String(parsed.code))
         };
       }
@@ -2890,7 +2913,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         };
       }
 
-      return { feedback: [], code: extractCode(raw) };
+      return { feedback: [], questions: [], code: extractCode(raw) };
     }
 
     const MICROBIT_ICON_NAMES = [
@@ -4100,6 +4123,27 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       "basic.onStart(...) (write startup code at the top level instead)."
     ];
 
+    // Do exactly what was asked. Students learn from code they can read end to end;
+    // every unrequested sound, animation or variable is something they did not
+    // choose and cannot explain.
+    const SCOPE_RULES = [
+      "",
+      "SCOPE:",
+      "- Build ONLY what the student asked for. Do not add extra features, sounds, animations, scores, buttons, pins or sensors they did not mention.",
+      "- If an optional improvement seems useful, put it in one feedback line as a suggestion (\"You could also ...\"). Never put it in the code."
+    ];
+
+    // Ask instead of guess. Sits in the same call as generation, so a clear request
+    // costs no extra API request.
+    const CLARIFY_RULES = [
+      "",
+      "CLARIFYING QUESTIONS:",
+      "- If the request is missing something that would change the program (which button or pin, how many, what should happen when, which sensor or output), ask instead of guessing.",
+      "- To ask, reply with {\"questions\":[\"question 1\",\"question 2\"],\"feedback\":[],\"code\":\"\"} and nothing else. Maximum 3 short, plain-language questions, one thing per question.",
+      "- Do NOT ask about things you can reasonably default (animation speed, which icon, exact wording). Do NOT ask when RECENT_CHAT shows you already asked and the student answered: build it now, defaulting anything still open.",
+      "- Do NOT ask when CURRENT_CODE exists and the request is a clear small change to it."
+    ];
+
     const OUTPUT_FORMAT_RULES = [
       "Return ONLY one compact JSON object: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}.",
       "feedback is an array of one or more short, friendly strings.",
@@ -4150,7 +4194,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         lines.push("", "CONVERSATION: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state. If CURRENT_CODE is truncated, make conservative edits and preserve existing patterns.");
         const followUpExtras = followUpPromptExtras(followUpKind);
         if (followUpExtras.length) lines.push(...followUpExtras);
+        lines.push(...CLARIFY_RULES);
       }
+      lines.push(...SCOPE_RULES);
 
       // 4. Output contract
       lines.push("", "OUTPUT FORMAT:");
@@ -4510,6 +4556,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       validationRetries = 0,
       truncationRetries = 1,
       capabilityRetries = 1,
+      allowClarify = false,
       maxAttempts = 1,
       callModel,
       runDecompile
@@ -4543,7 +4590,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         const code = sanitizeMakeCode(parsed.code);
         const validation = runValidateBlocks(code, target);
         // Empty source can pass the static validator; treat it as empty, not ok.
-        let reason = !String(code || "").trim()
+        const wantsClarify = allowClarify
+          && Array.isArray(parsed.questions) && parsed.questions.length > 0
+          && !String(code || "").trim();
+        let reason = wantsClarify
+          ? "clarify"
+          : !String(code || "").trim()
           ? "empty"
           : (validation.ok ? "ok" : "invalid");
         // A salvaged-but-truncated reply may still pass the static validator while
@@ -4572,11 +4624,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           validation,
           reason,
           decompile,
-          truncated: Boolean(parsed.truncated)
+          truncated: Boolean(parsed.truncated),
+          questions: wantsClarify ? parsed.questions : []
         };
         attempts.push(last);
 
-        if (reason === "ok") break;
+        if (reason === "ok" || reason === "clarify") break;
         if (attempts.length >= attemptLimit) break;
 
         if (reason === "capability" && capabilityLeft > 0) {
@@ -4653,6 +4706,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           validation: lastValidation,
           upstreamAttempts,
           outcome: "ok",
+          attempts
+        };
+      }
+
+      if (last && last.reason === "clarify") {
+        return {
+          code: "",
+          feedback: [],
+          questions: last.questions,
+          validation: lastValidation,
+          upstreamAttempts,
+          outcome: "clarify",
           attempts
         };
       }
@@ -4746,7 +4811,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const friendlyProviderError = (error) => {
     const status = error && error.status;
     if (status === 429) return "The AI service is rate limited right now. Waiting a moment, then trying again.";
-    if (status === 503 || status === 502 || status === 504) return "The AI service is busy right now. Trying again in a few seconds.";
+    if (status === 503 || status === 502 || status === 504) {
+      const cur = (typeof defaultProvider === "function" && defaultProvider()) || "";
+      const company = { gemini: "Google", openai: "OpenAI", openrouter: "OpenRouter", opencode: "OpenCode" }[cur] || "the AI provider";
+      return "It's the peak period, so " + company + "'s servers are overloaded right now. This is a " + company + " problem, not a Vibbit problem. Trying again in a few seconds.";
+    }
     if (status === 401 || status === 403) return "That API key was rejected. Check it in Settings.";
     if (status === 400) return "The AI service rejected the request. Try rephrasing your prompt.";
     return "";
@@ -4790,7 +4859,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
     const friendly = friendlyProviderError(lastError);
     const wrapped = new Error(friendly
-      ? friendly.replace(/Trying again.*$/, "").trim() + " It did not recover after several tries, so please try again in a minute."
+      ? friendly.replace(/Trying again.*$/, "").trim() + " It still has not recovered after several tries. Nothing is wrong with your code or Vibbit, so please wait a minute and try again."
       : (lastError && lastError.message) || "Request failed");
     wrapped.status = lastError && lastError.status;
     throw wrapped;
@@ -5195,6 +5264,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       initialUserPrompt: user,
       emptyRetries: EMPTY_RETRIES,
       validationRetries: VALIDATION_RETRIES,
+      allowClarify: true,
       maxAttempts: MAX_UPSTREAM_ATTEMPTS,
       callModel: async (messages, options) => {
         throwIfAborted(signal);
@@ -5581,9 +5651,23 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
   };
 
+  // If the last thing Vibbit did was ask clarifying questions, the next message
+  // is the student's answer. Returns the original request it belongs to, so the
+  // model gets "request + answers" instead of just a bare "3 times".
+  const pendingClarificationOriginal = () => {
+    const last = chatMessages[chatMessages.length - 1];
+    if (!last || last.role !== "assistant" || last.status !== "asking") return "";
+    for (let i = chatMessages.length - 2; i >= 0; i--) {
+      const m = chatMessages[i];
+      if (m && m.role === "user" && m.content) return String(m.content);
+    }
+    return "";
+  };
+
   const sendMessage = (forcedRequestOverride, forcedDialogOverride) => {
     if (busy) return;
-    if (!forcedRequestOverride && socraticEnabled()) {
+    const clarifyOriginal = forcedRequestOverride ? "" : pendingClarificationOriginal();
+    if (!forcedRequestOverride && !clarifyOriginal && socraticEnabled()) {
       const draft = (promptEl.value || "").trim();
       if (draft) { beginSocraticFlow(draft); return; }
     }
@@ -5701,6 +5785,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           }
 
           let effectiveRequest = (forcedRequest || "").trim() || request;
+          if (clarifyOriginal && !(forcedRequest || "").trim()) {
+            effectiveRequest = clarifyOriginal + "\n\nSTUDENT ANSWERS TO YOUR QUESTIONS: " + request
+              + "\n(Build it now. Do not ask more questions.)";
+          }
           if (!effectiveRequest) {
             if (!pageErrors.length && !conversionDialog) {
               throw new Error("Please enter a request.");
@@ -5743,6 +5831,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         })
         .then((result) => {
           throwIfAborted(signal);
+          if (result && result.outcome === "clarify" && Array.isArray(result.questions) && result.questions.length) {
+            // The model needs more detail. Show the questions, touch nothing in
+            // MakeCode, and let the student's next message carry the answers.
+            logLine("Model asked " + result.questions.length + " clarifying question(s). No code changed.");
+            setStatus("Waiting for your answer");
+            updateAssistantMessage(assistantIdx, { status: "asking", feedback: result.questions, content: "" });
+            return;
+          }
           finalFeedback = normaliseFeedback(result && result.feedback);
 
           // Hardware warnings (pin clashes, missing radio.setGroup, servo angle
@@ -5908,7 +6004,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       .then(() => {
         logLine("Revert complete.");
         /* add a system message to chat */
-        addChatMessage({ role: "assistant", content: "Reverted to previous code.", status: "cancelled" });
+        addChatMessage({ role: "assistant", content: undoStack.length ? "Went back one version. " + undoStack.length + " older version" + (undoStack.length === 1 ? "" : "s") + " still saved." : "Went back one version. No older versions left.", status: "cancelled" });
       })
       .catch((error) => {
         logLine("Revert failed: " + (error && error.message ? error.message : String(error)));

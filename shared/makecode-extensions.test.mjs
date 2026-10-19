@@ -477,3 +477,36 @@ test("the blehid extension's own rules mention the radio conflict for the model"
   const extras = buildExtensionPromptExtras("microbit", "send a keypress over bluetooth and also broadcast to another microbit with radio").join("\n");
   assert.match(extras, /Bluetooth and radio cannot run on the same micro:bit/);
 });
+
+test("model can ask clarifying questions instead of returning code", async () => {
+  const { runGenerationLoop, parseModelOutput } = await import("./makecode-compat-core.mjs");
+  const parsed = parseModelOutput('{"questions":["Which button?","How many times?"],"feedback":[],"code":""}');
+  assert.deepEqual(parsed.questions, ["Which button?", "How many times?"]);
+  let calls = 0;
+  const result = await runGenerationLoop({
+    target: "microbit", systemPrompt: "s", initialUserPrompt: "u",
+    allowClarify: true, emptyRetries: 2, maxAttempts: 3,
+    callModel: async () => { calls += 1; return '{"questions":["Which button?"],"feedback":[],"code":""}'; }
+  });
+  assert.equal(result.outcome, "clarify");
+  assert.equal(calls, 1, "asking must cost exactly one request");
+  assert.deepEqual(result.questions, ["Which button?"]);
+  assert.equal(result.code, "");
+});
+
+test("questions are ignored unless clarifying is allowed or code is present", async () => {
+  const { runGenerationLoop } = await import("./makecode-compat-core.mjs");
+  const withCode = await runGenerationLoop({
+    target: "microbit", systemPrompt: "s", initialUserPrompt: "u", allowClarify: true, maxAttempts: 1,
+    callModel: async () => '{"questions":["x?"],"feedback":["ok"],"code":"basic.showNumber(1)"}'
+  });
+  assert.equal(withCode.outcome, "ok");
+});
+
+test("conversational prompt carries clarify and scope rules", () => {
+  const chat = buildSystemPrompt("microbit", { conversational: true, requestHint: "x" });
+  assert.match(chat, /CLARIFYING QUESTIONS/);
+  assert.match(chat, /Build ONLY what the student asked for/);
+  const plain = buildSystemPrompt("microbit", { requestHint: "x" });
+  assert.doesNotMatch(plain, /CLARIFYING QUESTIONS/);
+});
