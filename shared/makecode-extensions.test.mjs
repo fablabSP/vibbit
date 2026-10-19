@@ -259,19 +259,39 @@ test("a missing-capability report retries with the full extension catalogue", as
 test("NFC is reached by both nfc and rfid keywords", () => {
   assert.deepEqual(detectRequiredExtensions("", "read an RFID card"), ["nfc"]);
   assert.deepEqual(detectRequiredExtensions("", "scan a tag with NFC"), ["nfc"]);
-  assert.deepEqual(detectRequiredExtensions("if (NFC.getCard()) { }"), ["nfc"]);
+  assert.deepEqual(detectRequiredExtensions("", "tap a card to open the door"), ["nfc"]);
+  assert.deepEqual(detectRequiredExtensions("if (nfc.cardPresent()) { }"), ["nfc"]);
 });
 
-test("NFC dependency uses the package's own name, not our internal id", () => {
+test("NFC dependency is pinned to a tag of the fablabSP library", () => {
+  const entry = MICROBIT_EXTENSIONS.nfc;
   const deps = extensionDependencies(["nfc"]);
-  assert.ok(deps.NFC, "pxt.json declares the package as NFC");
-  assert.match(deps.NFC, /^github:DFRobot\/pxt-NFCUART#[0-9a-f]{40}$/);
+  assert.equal(entry.pkgName, "pn532-nfc", "must equal the name field in the library's pxt.json");
+  assert.ok(deps[entry.pkgName], "dependency keyed by the package's own name");
+  assert.match(deps[entry.pkgName], /^github:fablabSP\/pxt-pn532-nfc#v\d/);
 });
 
-test("NFC arities match the real extension signatures", () => {
-  assert.equal(runValidateBlocks("basic.showString(NFC.getUID())", "microbit").ok, true);
-  const bad = runValidateBlocks("NFC.writeData(1, 2)", "microbit");
-  assert.ok(bad.violations.some((v) => /NFC\.writeData arity/.test(v)));
+test("NFC library stays free of radio so it can share a project with blehid", () => {
+  const rules = MICROBIT_EXTENSIONS.nfc.rules.join(" ");
+  assert.match(rules, /does not use radio/);
+  assert.match(rules, /Never add the radio extension/);
+});
+
+test("NFC prompt warns that only one onCardDetected handler works", () => {
+  assert.match(MICROBIT_EXTENSIONS.nfc.rules.join(" "), /ONCE per program/);
+});
+
+test("NFC arities match the planned library", () => {
+  assert.equal(runValidateBlocks("nfc.init()\nbasic.showString(nfc.readUID())", "microbit").ok, true);
+  assert.equal(runValidateBlocks("nfc.onCardDetected(function (uid) { basic.showString(uid) })", "microbit").ok, true);
+  assert.ok(runValidateBlocks("nfc.writeBlockText(1)", "microbit").violations.some((v) => /nfc\.writeBlockText arity/.test(v)));
+  assert.ok(runValidateBlocks("nfc.readBlockText()", "microbit").violations.some((v) => /nfc\.readBlockText arity/.test(v)));
+});
+
+test("NFC with another block on P19/P20 warns about the I2C pins", () => {
+  const clash = runValidateBlocks("nfc.init()\npins.digitalWritePin(DigitalPin.P19, 1)", "microbit");
+  assert.ok(clash.warnings.some((w) => /P19/.test(w)));
+  assert.equal(runValidateBlocks("nfc.init()\npins.digitalWritePin(DigitalPin.P1, 1)", "microbit").warnings.length, 0);
 });
 
 /* ── Socratic mode ─────────────────────────────────────────── */

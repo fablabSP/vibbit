@@ -177,7 +177,7 @@ run. Vibbit knows about these:
 | NeoPixel / LED strip | `neopixel` | "rainbow on 8 neopixels on P1" |
 | Ultrasonic distance | `sonar` | "measure distance with the ultrasonic sensor" |
 | Bluetooth keyboard/mouse | `blehid` | "send a keypress to my computer over bluetooth" |
-| NFC / RFID cards | `NFC` | "read an RFID card and show the UID" |
+| NFC / RFID cards | `NFC` (FabLab PN532 I2C) | "read an RFID card and show the UID" |
 | Servo motor | *(built in)* | "move a servo on P1 to 90 degrees" |
 
 **Add the extension before you prompt.** In MakeCode: gear icon →
@@ -192,10 +192,20 @@ extension you haven't added yet.
 - You must set **Project Settings → No Pairing Required** before your computer
   can connect.
 
-### NFC needs the expansion board
+### NFC needs a PN532 module
 
-The NFC blocks talk to a DFRobot PN532 module over I2C. A bare micro:bit won't
-do anything on its own.
+The NFC blocks talk to a PN532 module over I2C. A bare micro:bit won't do
+anything on its own.
+
+| PN532 | micro:bit |
+|---|---|
+| SDA | P20 |
+| SCL | P19 |
+| GND | GND |
+| VCC | 3V |
+
+Set the mode switches to **SEL0 on, SEL1 off** (I2C). The NFC extension does not
+use radio, so it works in the same project as Bluetooth keyboard blocks.
 
 ---
 

@@ -3535,51 +3535,66 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       },
       nfc: {
         id: "nfc",
-        label: "NFC / RFID (DFRobot PN532)",
-        // pxt.json declares the package name as "NFC", so the dependency key must
-        // match that, not the lowercase id we use internally.
-        // No tags exist on this repo, so pin the commit instead. Unpinned
-        // github: dependencies can change under a class mid-workshop.
-        pkg: "github:DFRobot/pxt-NFCUART#fe3ccbe03d5ef804b39d3959c11186cee2c48efb",
-        pkgName: "NFC",
-        docs: "https://github.com/DFRobot/pxt-NFCUART",
-        detect: /\bNFC\s*\./,
-        intent: /\b(nfc|rfid|pn532|tag reader|card reader|read a? ?card|scan a? ?(card|tag)|access card|ez-?link)\b/i,
+        label: "NFC / RFID (PN532, I2C)",
+        // ONE place to change when the library is re-tagged. pkgName must equal the
+        // "name" field in that repo's pxt.json, because MakeCode keys the dependency
+        // by that name, not by our lowercase id.
+        // The library is dependency-free on purpose: no radio, no yotta bluetooth
+        // setting, so it coexists with blehid (Bluetooth HID) in one project.
+        pkg: "github:fablabSP/pxt-pn532-nfc#v0.1.0",
+        pkgName: "pn532-nfc",
+        docs: "https://github.com/fablabSP/pxt-pn532-nfc",
+        detect: /\bnfc\s*\./,
+        intent: /\b(nfc|rfid|pn532|tag reader|card reader|read a? ?card|scan a? ?(card|tag)|tap a? ?(card|tag)|access card|ez-?link)\b/i,
         apis: [
-          "NFC.getCard() -> boolean (true when a card is present)",
-          "NFC.getUID() -> string (the card's unique ID)",
-          "NFC.checkUID(str: string) -> boolean (true when the present card matches str)",
-          "NFC.nfcEvent(handler) - runs the handler when a card is detected",
-          "NFC.readNFCData(num: number) -> string (all data in a block)",
-          "NFC.readNFCDataOne(blockNum: number, byteNum: number) -> number",
-          "NFC.writeData(blockNum: number, index: number, data: number)",
-          "NFC.blockList(blockNum?: DataBlockList) -> number",
-          "NFC.nfcDataList(dataNum?: byteNumList) -> number"
+          "nfc.init() - call once at the top, before any other nfc block (safe to call twice)",
+          "nfc.isConnected() -> boolean (true when the PN532 answers)",
+          "nfc.firmwareVersion() -> string",
+          "nfc.cardPresent() -> boolean (true while a card is on the reader)",
+          "nfc.readUID() -> string (uppercase hex, no spaces, \"\" when no card)",
+          "nfc.cardType() -> string (\"MIFARE Classic\", \"NTAG\" or \"Unknown\", and \"\" when no card is present)",
+          "nfc.onCardDetected(handler: (uid: string) => void) - runs once per new tap, with the card's UID",
+          "nfc.readBlockText(block: number) -> string (MIFARE Classic, blocks 1 to 62, up to 16 characters, \"\" when it fails)",
+          "nfc.writeBlockText(block: number, text: string) -> boolean (false if refused or failed)",
+          "nfc.readNDEFText() -> string (NTAG stickers, text a phone can also read)",
+          "nfc.writeNDEFText(text: string) -> boolean (up to 130 characters)"
         ],
         enums: {},
         signatures: [
-          { call: "NFC.getCard", minArgs: 0, maxArgs: 0 },
-          { call: "NFC.getUID", minArgs: 0, maxArgs: 0 },
-          { call: "NFC.checkUID", minArgs: 1, maxArgs: 1 },
-          { call: "NFC.nfcEvent", minArgs: 1, maxArgs: 1 },
-          { call: "NFC.readNFCData", minArgs: 1, maxArgs: 1 },
-          { call: "NFC.readNFCDataOne", minArgs: 2, maxArgs: 2 },
-          { call: "NFC.writeData", minArgs: 3, maxArgs: 3 }
+          { call: "nfc.init", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.isConnected", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.firmwareVersion", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.cardPresent", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.readUID", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.cardType", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.onCardDetected", minArgs: 1, maxArgs: 1 },
+          { call: "nfc.readBlockText", minArgs: 1, maxArgs: 1 },
+          { call: "nfc.writeBlockText", minArgs: 2, maxArgs: 2 },
+          { call: "nfc.readNDEFText", minArgs: 0, maxArgs: 0 },
+          { call: "nfc.writeNDEFText", minArgs: 1, maxArgs: 1 }
         ],
         rules: [
-          "The namespace is capitalised: write NFC.getCard(), never nfc.getCard().",
-          "Guard reads with NFC.getCard() before calling NFC.getUID(), otherwise you read an empty string.",
-          "Compare cards with NFC.checkUID(\"...\") or by storing NFC.getUID() in a variable; do not compare against a number.",
-          "This needs the DFRobot NFC expansion board wired over I2C, not just a bare micro:bit.",
-          "Poll inside basic.forever with a pause of at least 200 ms, or use NFC.nfcEvent for a card-detected handler."
+          "The namespace is lowercase: write nfc.readUID(), never NFC.readUID().",
+          "Call nfc.init() once at the top of the program, before any other nfc call. Do not call it inside a loop.",
+          "When the student asks to do something 'when a card is tapped', use nfc.onCardDetected(function (uid) { ... }). It fires once per tap, so do not also poll with nfc.cardPresent().",
+          "Use nfc.onCardDetected only ONCE per program: a second one is ignored. Put all the tap behaviour inside that one handler, using if/else on uid.",
+          "Only poll with nfc.cardPresent() / nfc.readUID() for 'while a card is held' behaviour, inside basic.forever with a pause of at least 200 ms.",
+          "UIDs are uppercase hex strings with no spaces, for example \"04A1B2C3\". Compare with ==, never with a number.",
+          "MIFARE Classic cards and key tags use nfc.readBlockText / nfc.writeBlockText. Blocks hold 16 characters. Use blocks 1, 2, 4, 5, 6, 8 and so on, never above 62. readBlockText returns \"\" and writeBlockText returns false when the card is missing, is not MIFARE Classic, or the block is refused, so check the result. Block 0 and every fourth block (3, 7, 11, ...) are refused and return false, so cards cannot be bricked.",
+          "NTAG stickers and cards use nfc.readNDEFText / nfc.writeNDEFText, which a phone can read too. Tell the student which card type each pair of blocks is for.",
+          "Check nfc.isConnected() once after nfc.init() and show an error icon when it is false, so a wiring fault is obvious.",
+          "Wiring is the PN532 on I2C: SDA to P20, SCL to P19, switch SEL0 on and SEL1 off. Do not use pins P19 or P20 for anything else in the same project. Say this in the feedback.",
+          "This extension does not use radio, so it works together with Bluetooth HID (blehid). Never add the radio extension for NFC. Radio and Bluetooth still cannot run together."
         ],
         example: [
-          "basic.forever(function () {",
-          "    if (NFC.getCard()) {",
-          "        basic.showString(NFC.getUID())",
-          "        basic.pause(1000)",
-          "    }",
-          "    basic.pause(200)",
+          "nfc.init()",
+          "if (nfc.isConnected()) {",
+          "    basic.showIcon(IconNames.Yes)",
+          "} else {",
+          "    basic.showIcon(IconNames.No)",
+          "}",
+          "nfc.onCardDetected(function (uid) {",
+          "    basic.showString(uid)",
           "})"
         ].join("\n")
       },
@@ -3662,6 +3677,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     // Hardware rules that produce warnings rather than hard validation failures.
     // These are the mistakes that actually waste classroom time.
     const HARDWARE_WARNINGS = [
+      {
+        when: (code) => /\bnfc\s*\./.test(code) && /\b(?:Digital|Analog)Pin\.P(?:19|20)\b/.test(code),
+        warn: "The NFC reader uses P19 (SCL) and P20 (SDA) for I2C. Another block on P19 or P20 will stop the reader working. Move it to another pin."
+      },
       {
         when: (code) => /neopixel\.create\s*\(\s*DigitalPin\.P0\b/.test(code),
         warn: "NeoPixel on P0 clashes with the built-in speaker on micro:bit V2. Prefer P1 or P2."
