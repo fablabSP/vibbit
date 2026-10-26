@@ -88,6 +88,21 @@ improve their models. Don't paste anything private or personal into Vibbit.
 Google changes these limits from time to time. The current figures for your own
 key are in [AI Studio](https://aistudio.google.com/).
 
+### Using Claude instead
+
+Vibbit can also use Claude. Choose **Claude (Anthropic)** as the provider in
+Settings and paste a key from <https://console.anthropic.com/> (Settings, API
+keys).
+
+- **There is no free tier.** Claude needs prepaid credit on the Anthropic
+  account, so this is best as a key held by the teacher, not by students.
+- **Pick a model:** *Haiku* is the fast, lowest-cost choice and is the default.
+  *Sonnet* and *Opus* are smarter and cost more per prompt.
+- Vibbit hides the "requests left today" counter for Claude, because paid
+  accounts have no fixed daily allowance. Check your spend in the Anthropic
+  Console.
+- If Claude says the account is out of credit, top it up in the Console.
+
 ---
 
 ## Install Vibbit
@@ -178,6 +193,13 @@ run. Vibbit knows about these:
 | Ultrasonic distance | `sonar` | "measure distance with the ultrasonic sensor" |
 | Bluetooth keyboard/mouse | `blehid` | "send a keypress to my computer over bluetooth" |
 | NFC / RFID cards | `NFC` (FabLab PN532 I2C) | "read an RFID card and show the UID" |
+| Single / double click, long press | `microbit-pxt-clicks` | "double click A shows a heart, hold A shows a skull" |
+| Clock and calendar | `microbit-pxt-timeanddate` | "show the time when I press A" |
+| Data logging (V2) | `datalogger` | "log temperature and light every time I press A" |
+| Wait for a button / pin | `Wait Until Custom Blocks` | "wait until A is pressed, then start" |
+| Sound level in decibels (V2) | `Sound Level in decibels (dB)` | "show the noise level in dB" |
+| Voice recording (V2) | `audio-recording` | "record my voice on A and play it back on B" |
+| Rotary encoder (KY-040) | `ky040-rotary-encoder-plus` | "turn the knob to change a number" |
 | Servo motor | *(built in)* | "move a servo on P1 to 90 degrees" |
 
 **Add the extension before you prompt.** In MakeCode: gear icon →
@@ -185,6 +207,14 @@ run. Vibbit knows about these:
 
 Vibbit shows an amber banner above the input box when your prompt needs an
 extension you haven't added yet.
+
+### Notes on the newer extensions
+
+- **V2 only:** Data Logger, Sound Level (dB) and Audio Recording need a micro:bit V2.
+- **Wait Until Blocks** is the FabLab fork (no radio), so it works with Bluetooth HID.
+- **Time and Date** is a software clock: type the current time into the program;
+  it resets whenever the micro:bit does.
+- **Rotary encoder 1** uses pin P0 (the V2 speaker); use encoder 3 if you play sound.
 
 ### Bluetooth HID needs two extra steps
 

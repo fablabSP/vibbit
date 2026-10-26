@@ -1006,6 +1006,323 @@ export const MICROBIT_EXTENSIONS = Object.freeze({
       "})"
     ].join("\n")
   },
+  clicks: {
+    id: "clicks",
+    label: "Button Clicks (single, double, held)",
+    pkg: "github:bsiever/microbit-pxt-clicks#v0.2.2",
+    pkgName: "microbit-pxt-clicks",
+    docs: "https://makecode.microbit.org/pkg/bsiever/microbit-pxt-clicks",
+    detect: /\bbuttonClicks\s*\./,
+    intent: /\b(double[- ]?click(?:s|ed)?|single[- ]?click(?:s|ed)?|long[- ]?press|press(?:ed)? and hold|button clicks?|click types?)\b/i,
+    apis: [
+      "buttonClicks.onButtonSingleClicked(button: buttonClicks.AorB, handler)",
+      "buttonClicks.onButtonDoubleClicked(button: buttonClicks.AorB, handler)",
+      "buttonClicks.onButtonHeld(button: buttonClicks.AorB, handler) - a long press",
+      "buttonClicks.onButtonDown(button, handler) / buttonClicks.onButtonUp(button, handler) - raw press and release"
+    ],
+    enums: { AorB: ["A", "B"] },
+    signatures: [
+      { call: "buttonClicks.onButtonSingleClicked", minArgs: 2, maxArgs: 2 },
+      { call: "buttonClicks.onButtonDoubleClicked", minArgs: 2, maxArgs: 2 },
+      { call: "buttonClicks.onButtonHeld", minArgs: 2, maxArgs: 2 },
+      { call: "buttonClicks.onButtonDown", minArgs: 2, maxArgs: 2 },
+      { call: "buttonClicks.onButtonUp", minArgs: 2, maxArgs: 2 }
+    ],
+    rules: [
+      "The button argument is buttonClicks.AorB.A or buttonClicks.AorB.B, NOT Button.A. There is no A+B option.",
+      "Register each click type at most ONCE per button: a second onButtonSingleClicked for the same button replaces the first.",
+      "Do not use input.onButtonPressed for a button that also uses buttonClicks. Use buttonClicks for every handler on that button.",
+      "Single click, double click and held are mutually exclusive: one press is only ever one of them.",
+      "A double click is detected by waiting briefly, so the single-click handler runs a moment late. Say this in the feedback if the program uses both."
+    ],
+    example: [
+      "buttonClicks.onButtonSingleClicked(buttonClicks.AorB.A, function () {",
+      "    basic.showIcon(IconNames.Happy)",
+      "})",
+      "buttonClicks.onButtonDoubleClicked(buttonClicks.AorB.A, function () {",
+      "    basic.showIcon(IconNames.Heart)",
+      "})",
+      "buttonClicks.onButtonHeld(buttonClicks.AorB.A, function () {",
+      "    basic.showIcon(IconNames.Skull)",
+      "})"
+    ].join("\n")
+  },
+  timeanddate: {
+    id: "timeanddate",
+    label: "Time and Date (clock)",
+    pkg: "github:bsiever/microbit-pxt-timeanddate#v2.0.33",
+    pkgName: "microbit-pxt-timeanddate",
+    docs: "https://makecode.microbit.org/pkg/bsiever/microbit-pxt-timeanddate",
+    detect: /\btimeanddate\s*\./,
+    intent: /\b(clock|real[- ]?time clock|rtc|time of day|current time|what time|time and date|date and time|calendar|today'?s date|day of the week|alarm clock)\b/i,
+    apis: [
+      "timeanddate.set24HourTime(hour 0-23, minute, second)",
+      "timeanddate.setTime(hour 1-12, minute, second, timeanddate.MornNight.AM or PM)",
+      "timeanddate.setDate(month 1-12, day 1-31, year)",
+      "timeanddate.time(timeanddate.TimeFormat.X) -> string",
+      "timeanddate.date(timeanddate.DateFormat.X) -> string",
+      "timeanddate.dateTime() -> string, \"YYYY-MM-DD HH:MM.SS\" (use this for logging)",
+      "timeanddate.numericTime(function (hour, minute, second, month, day, year) { ... })",
+      "timeanddate.secondsSinceReset() -> number",
+      "timeanddate.advanceBy(amount, timeanddate.TimeUnit.X) - move the clock (negative goes back)",
+      "timeanddate.dateToDayOfWeek(month, day, year) -> number, 0 = Monday ... 6 = Sunday",
+      "timeanddate.dateToDayOfYear(month, day, year) -> number",
+      "timeanddate.onMinuteChanged(handler), timeanddate.onHourChanged(handler), timeanddate.onDayChanged(handler)"
+    ],
+    enums: {
+      TimeFormat: ["HMMSSAMPM", "HHMM24hr", "HHMMSS24hr", "HMM", "HMMAMPM"],
+      DateFormat: ["MD", "MDY", "YYYY_MM_DD"],
+      TimeUnit: ["Milliseconds", "Seconds", "Minutes", "Hours", "Days"],
+      MornNight: ["AM", "PM"]
+    },
+    signatures: [
+      { call: "timeanddate.set24HourTime", minArgs: 3, maxArgs: 3 },
+      { call: "timeanddate.setTime", minArgs: 4, maxArgs: 4 },
+      { call: "timeanddate.setDate", minArgs: 3, maxArgs: 3 },
+      { call: "timeanddate.time", minArgs: 1, maxArgs: 1 },
+      { call: "timeanddate.date", minArgs: 1, maxArgs: 1 },
+      { call: "timeanddate.dateTime", minArgs: 0, maxArgs: 0 },
+      { call: "timeanddate.numericTime", minArgs: 1, maxArgs: 1 },
+      { call: "timeanddate.secondsSinceReset", minArgs: 0, maxArgs: 0 },
+      { call: "timeanddate.advanceBy", minArgs: 2, maxArgs: 2 },
+      { call: "timeanddate.dateToDayOfWeek", minArgs: 3, maxArgs: 3 },
+      { call: "timeanddate.dateToDayOfYear", minArgs: 3, maxArgs: 3 },
+      { call: "timeanddate.onMinuteChanged", minArgs: 1, maxArgs: 1 },
+      { call: "timeanddate.onHourChanged", minArgs: 1, maxArgs: 1 },
+      { call: "timeanddate.onDayChanged", minArgs: 1, maxArgs: 1 }
+    ],
+    rules: [
+      "This is a software clock with no battery. It must be set with set24HourTime (and setDate if the date matters) at the top of the program, and it forgets the time on every reset, reprogram or power loss. Say this in the feedback.",
+      "Never set the time from the real world automatically: the student types the current time into the program, so tell them to update the numbers before flashing.",
+      "For one timestamp use timeanddate.dateTime(). Do not join time() and date() yourself: the date can change between the two calls.",
+      "The clock drifts by a few seconds per day (more on micro:bit V2), so it suits a class demo, not a precise timer.",
+      "Do not change the time backwards inside onHourChanged: it can trigger itself again and loop."
+    ],
+    example: [
+      "timeanddate.set24HourTime(9, 30, 0)",
+      "timeanddate.setDate(10, 25, 2026)",
+      "input.onButtonPressed(Button.A, function () {",
+      "    basic.showString(timeanddate.time(timeanddate.TimeFormat.HHMM24hr))",
+      "})",
+      "input.onButtonPressed(Button.B, function () {",
+      "    basic.showString(timeanddate.date(timeanddate.DateFormat.MD))",
+      "})"
+    ].join("\n")
+  },
+  datalogger: {
+    id: "datalogger",
+    label: "Data Logger",
+    // Built into MakeCode. It still has to be added from Extensions.
+    pkg: "datalogger",
+    docs: "https://makecode.microbit.org/reference/datalogger",
+    detect: /\bdatalogger\s*\./,
+    intent: /\b(data ?logg(?:er|ing)|log (?:the )?(?:data|temperature|readings?|values?|sensor|light|sound)|record (?:the )?(?:data|temperature|readings?|values?)|save (?:the )?(?:data|readings?|temperature)|MY_DATA|csv)\b/i,
+    apis: [
+      "datalogger.setColumnTitles(\"temp\", \"light\") - up to 10 column names, call once at the top",
+      "datalogger.createCV(\"temp\", value) -> a column and its value",
+      "datalogger.log(datalogger.createCV(\"temp\", input.temperature()), datalogger.createCV(\"light\", input.lightLevel())) - one row, 1 to 10 createCV items",
+      "datalogger.onLogFull(handler) - runs when flash memory is full",
+      "datalogger.deleteLog() / datalogger.deleteLog(datalogger.DeleteType.Fast or Full)",
+      "datalogger.includeTimestamp(FlashLogTimeStampFormat.X) - adds a time column",
+      "datalogger.mirrorToSerial(true) - also print each row to serial",
+      "datalogger.getNumberOfRows() -> number"
+    ],
+    enums: {
+      DeleteType: ["Fast", "Full"],
+      FlashLogTimeStampFormat: ["None", "Milliseconds", "Seconds", "Minutes", "Hours", "Days"]
+    },
+    signatures: [
+      { call: "datalogger.setColumnTitles", minArgs: 1, maxArgs: 10 },
+      { call: "datalogger.createCV", minArgs: 2, maxArgs: 2 },
+      { call: "datalogger.log", minArgs: 1, maxArgs: 10 },
+      { call: "datalogger.onLogFull", minArgs: 1, maxArgs: 1 },
+      { call: "datalogger.deleteLog", minArgs: 0, maxArgs: 1 },
+      { call: "datalogger.includeTimestamp", minArgs: 1, maxArgs: 1 },
+      { call: "datalogger.mirrorToSerial", minArgs: 1, maxArgs: 1 },
+      { call: "datalogger.getNumberOfRows", minArgs: 0, maxArgs: 1 }
+    ],
+    rules: [
+      "micro:bit V2 only. A V1 board shows error 927. Say so in the feedback.",
+      "Call datalogger.setColumnTitles(...) once at the top, then datalogger.log(...) with the SAME column names in createCV. A different name makes a new column.",
+      "Each row is one datalogger.log call with up to 10 createCV items. Log inside an event or a timed loop (for example every 5 seconds), never in a tight loop with no pause.",
+      "Values go to flash memory on the micro:bit. To read them, plug in USB and open the MY_DATA drive (MY_DATA.HTM), or use Show data in MakeCode.",
+      "Flash is limited. For long runs add datalogger.onLogFull(function () { ... }) and show a message so the student knows logging stopped.",
+      "datalogger.deleteLog() clears the whole log including the column titles, so call setColumnTitles again afterwards."
+    ],
+    example: [
+      "datalogger.setColumnTitles(\"temperature\", \"light\")",
+      "input.onButtonPressed(Button.A, function () {",
+      "    datalogger.log(datalogger.createCV(\"temperature\", input.temperature()), datalogger.createCV(\"light\", input.lightLevel()))",
+      "    basic.showIcon(IconNames.Yes)",
+      "})",
+      "datalogger.onLogFull(function () {",
+      "    basic.showIcon(IconNames.No)",
+      "})"
+    ].join("\n")
+  },
+  waituntil: {
+    id: "waituntil",
+    label: "Wait Until Blocks",
+    // FabLab fork of teacherpinky/wait-until-blocks with the unused radio dependency removed.
+    pkg: "github:fablabSP/Wait-Until-Blocks#v0.1.13",
+    pkgName: "Wait Until Custom Blocks",
+    docs: "https://github.com/fablabSP/Wait-Until-Blocks",
+    detect: /\bWaitUntilBlocks\s*\./,
+    intent: /\b(wait until|wait for (?:a |the )?(?:button|pin|touch|clap|loud|sound))\b/i,
+    apis: [
+      "WaitUntilBlocks.waitUntilButtonPressed(Button.A) / (Button.B) / (Button.AB)",
+      "WaitUntilBlocks.waitUntilButtonReleased(Button.A)",
+      "WaitUntilBlocks.waitUntilPinPressed(TouchPin.P0) / waitUntilPinReleased(TouchPin.P0)",
+      "WaitUntilBlocks.waitUntilSoundLevelAbove(level) / waitUntilSoundLevelBelow(level) - micro:bit V2 only"
+    ],
+    enums: {},
+    signatures: [
+      { call: "WaitUntilBlocks.waitUntilButtonPressed", minArgs: 1, maxArgs: 1 },
+      { call: "WaitUntilBlocks.waitUntilButtonReleased", minArgs: 1, maxArgs: 1 },
+      { call: "WaitUntilBlocks.waitUntilPinPressed", minArgs: 1, maxArgs: 1 },
+      { call: "WaitUntilBlocks.waitUntilPinReleased", minArgs: 1, maxArgs: 1 },
+      { call: "WaitUntilBlocks.waitUntilSoundLevelAbove", minArgs: 1, maxArgs: 1 },
+      { call: "WaitUntilBlocks.waitUntilSoundLevelBelow", minArgs: 1, maxArgs: 1 }
+    ],
+    rules: [
+      "Each call PAUSES the program until the condition happens, then carries on with the next line. There is no handler and no function argument.",
+      "This is the FabLab fork. It does not install radio, so it is safe to use together with Bluetooth HID.",
+      "Because it pauses the program, use it at the top level or in basic.forever, not in a handler that must stay responsive.",
+      "Sound level waits are micro:bit V2 only, and the level is the 0-255 microphone value, not decibels."
+    ],
+    example: [
+      "basic.showIcon(IconNames.Asleep)",
+      "WaitUntilBlocks.waitUntilButtonPressed(Button.A)",
+      "basic.showIcon(IconNames.Happy)"
+    ].join("\n")
+  },
+  sounddb: {
+    id: "sounddb",
+    label: "Sound Level in decibels (dB)",
+    pkg: "github:microbit-foundation/pxt-sound-level-db#v0.1.13",
+    pkgName: "Sound Level in decibels (dB)",
+    docs: "https://makecode.microbit.org/pkg/microbit-foundation/pxt-sound-level-db",
+    // The block lives in the core "input" namespace, so the editor probe must
+    // look for the function itself, not for a namespace that always exists.
+    probe: "function\\s+soundLevelDb\\b",
+    detect: /\binput\.soundLevelDb\s*\(/,
+    intent: /\b(decibels?|dB|noise level in|loudness in|sound level in)\b/i,
+    apis: [
+      "input.soundLevelDb() -> number, the microphone loudness in decibels (about 35 to 100)"
+    ],
+    enums: {},
+    signatures: [
+      { call: "input.soundLevelDb", minArgs: 0, maxArgs: 0 }
+    ],
+    rules: [
+      "micro:bit V2 only (the microphone is on the front, next to the logo). A V1 board shows error 927. Say so in the feedback.",
+      "This is the decibel version. The built-in input.soundLevel() is a 0-255 number and needs no extension, so use that when the student does not ask for decibels.",
+      "For clap or loud-noise triggers the built-in input.onSound(DetectedSound.Loud, function () { ... }) is simpler than polling this block.",
+      "The package is marked beta. Read the level inside basic.forever with a pause of at least 100 ms."
+    ],
+    example: [
+      "basic.forever(function () {",
+      "    basic.showNumber(input.soundLevelDb())",
+      "    basic.pause(500)",
+      "})"
+    ].join("\n")
+  },
+  "audio-recording": {
+    id: "audio-recording",
+    label: "Audio Recording",
+    pkg: "audio-recording",
+    docs: "https://makecode.microbit.org/reference/audio-recording",
+    detect: /\brecord\s*\.\s*(?:startRecording|playAudio|stopRecording|eraseRecording|audioStatus|setMicGain|setSampleRate)\b/,
+    intent: /\b(record (?:a |my |the |some )?(?:audio|sound|voice|clip|speech)|voice recorder|audio clip|play back (?:my |the )?(?:voice|recording|sound)|recording of (?:my |the )?(?:voice|sound))\b/i,
+    apis: [
+      "record.startRecording(record.BlockingState.Blocking) - records a short clip (about 3 seconds) from the microphone",
+      "record.playAudio(record.BlockingState.Blocking) - plays the clip on the speaker",
+      "record.stopRecording(), record.eraseRecording()",
+      "record.audioStatus(record.AudioStatus.Playing) -> boolean",
+      "record.setMicGain(record.AudioLevels.Low | Medium | High)",
+      "record.setSampleRate(hz)"
+    ],
+    enums: {
+      BlockingState: ["Blocking", "Nonblocking"],
+      AudioStatus: ["Playing", "Recording", "Stopped", "BufferEmpty"],
+      AudioLevels: ["Low", "Medium", "High"],
+      AudioSampleRateScope: ["Everything", "Playback", "Recording"]
+    },
+    signatures: [
+      { call: "record.startRecording", minArgs: 1, maxArgs: 1 },
+      { call: "record.playAudio", minArgs: 1, maxArgs: 1 },
+      { call: "record.stopRecording", minArgs: 0, maxArgs: 0 },
+      { call: "record.eraseRecording", minArgs: 0, maxArgs: 0 },
+      { call: "record.audioStatus", minArgs: 1, maxArgs: 1 },
+      { call: "record.setMicGain", minArgs: 1, maxArgs: 1 },
+      { call: "record.setSampleRate", minArgs: 1, maxArgs: 2 }
+    ],
+    rules: [
+      "micro:bit V2 only (microphone and speaker). A V1 board shows error 927. Say so in the feedback.",
+      "Only ONE short clip (about 3 seconds) is stored at a time. Recording again overwrites it, and it is lost on reset.",
+      "record.BlockingState.Blocking waits until the recording or playback is finished. Use Nonblocking only if the program needs to do something else meanwhile.",
+      "The namespace is called record, so never name a variable record.",
+      "Show a cue before recording (for example an icon) so the student knows when to speak."
+    ],
+    example: [
+      "input.onButtonPressed(Button.A, function () {",
+      "    basic.showIcon(IconNames.Square)",
+      "    record.startRecording(record.BlockingState.Blocking)",
+      "    basic.showIcon(IconNames.Yes)",
+      "})",
+      "input.onButtonPressed(Button.B, function () {",
+      "    record.playAudio(record.BlockingState.Blocking)",
+      "})"
+    ].join("\n")
+  },
+  rotary: {
+    id: "rotary",
+    label: "Rotary Encoder (KY-040)",
+    // v0.8.0 is a git tag; the repo has no GitHub release page for it.
+    pkg: "github:steveturbek/pxt-rotary-encoder-ky-040-plus#v0.8.0",
+    pkgName: "ky040-rotary-encoder-plus",
+    docs: "https://github.com/steveturbek/pxt-rotary-encoder-ky-040-plus",
+    detect: /\brotaryEncoderPlus\s*\./,
+    intent: /\b(rotary|encoder|ky-?040|volume knob|turn(?:ing)? a knob)\b/i,
+    apis: [
+      "rotaryEncoderPlus.connectEncoder1() - CLK P0, DT P1, SW P2",
+      "rotaryEncoderPlus.connectEncoder2() - CLK P8, DT P9, SW P13",
+      "rotaryEncoderPlus.connectEncoder3() - CLK P14, DT P15, SW P16",
+      "rotaryEncoderPlus.connectAdvanced(id, clk: DigitalPin, dt: DigitalPin, sw: DigitalPin, switchType?) - any pins",
+      "rotaryEncoderPlus.onEvent(id, event, handler) - id is rotaryEncoderPlus.EncoderID.E1 / E2 / E3"
+    ],
+    enums: {
+      EncoderID: ["E1", "E2", "E3"],
+      EncoderEvent: ["Clockwise", "CounterClockwise", "ButtonPress"],
+      SwitchType: ["Standard", "ActiveHigh"]
+    },
+    signatures: [
+      { call: "rotaryEncoderPlus.connectEncoder1", minArgs: 0, maxArgs: 0 },
+      { call: "rotaryEncoderPlus.connectEncoder2", minArgs: 0, maxArgs: 0 },
+      { call: "rotaryEncoderPlus.connectEncoder3", minArgs: 0, maxArgs: 0 },
+      { call: "rotaryEncoderPlus.connectAdvanced", minArgs: 4, maxArgs: 5 },
+      { call: "rotaryEncoderPlus.onEvent", minArgs: 3, maxArgs: 3 }
+    ],
+    rules: [
+      "Call a connect block (connectEncoder1/2/3 or connectAdvanced) FIRST, before any onEvent handler. Say which pins to wire in the feedback.",
+      "The event is rotaryEncoderPlus.EncoderEvent.Clockwise, CounterClockwise or ButtonPress. Keep the count in a top-level variable that the handlers change.",
+      "Encoder 1 uses pin P0, which is the speaker on micro:bit V2. If the program plays sound, use connectEncoder3() or connectAdvanced with other pins instead.",
+      "Avoid P3, P4, P6, P7 and P10 for an encoder: they drive the LED screen. Avoid P12.",
+      "A plain KY-040 button connects to GND when pressed (SwitchType.Standard, the default). An RGB encoder with an active-high button needs connectAdvanced(..., rotaryEncoderPlus.SwitchType.ActiveHigh)."
+    ],
+    example: [
+      "let count = 0",
+      "rotaryEncoderPlus.connectEncoder3()",
+      "rotaryEncoderPlus.onEvent(rotaryEncoderPlus.EncoderID.E3, rotaryEncoderPlus.EncoderEvent.Clockwise, function () {",
+      "    count += 1",
+      "    basic.showNumber(count)",
+      "})",
+      "rotaryEncoderPlus.onEvent(rotaryEncoderPlus.EncoderID.E3, rotaryEncoderPlus.EncoderEvent.CounterClockwise, function () {",
+      "    count -= 1",
+      "    basic.showNumber(count)",
+      "})"
+    ].join("\n")
+  },
   sonar: {
     id: "sonar",
     label: "Sonar (HC-SR04)",
@@ -1085,6 +1402,18 @@ const SERVO_RULES = [
 // Hardware rules that produce warnings rather than hard validation failures.
 // These are the mistakes that actually waste classroom time.
 const HARDWARE_WARNINGS = [
+  {
+    when: (code) => /\btimeanddate\s*\./.test(code) && !/\btimeanddate\.(?:set24HourTime|setTime)\s*\(/.test(code),
+    warn: "The clock is never set. It starts at 00:00 after every reset or reprogram, so add timeanddate.set24HourTime(hour, minute, second) at the top."
+  },
+  {
+    when: (code) => /\brotaryEncoderPlus\.onEvent\s*\(/.test(code) && !/\brotaryEncoderPlus\.connect(?:Encoder[123]|Advanced)\s*\(/.test(code),
+    warn: "A rotary encoder handler is used but no connect block is called, so it will never fire. Call rotaryEncoderPlus.connectEncoder1() (or 2, 3) first."
+  },
+  {
+    when: (code) => /\brotaryEncoderPlus\.connectEncoder1\s*\(/.test(code) && /\bmusic\.(playTone|ringTone|play|playMelody|beat)\s*\(/.test(code),
+    warn: "Rotary encoder 1 uses pin P0, the built-in speaker pin. Sound and the encoder will fight. Use connectEncoder3() instead."
+  },
   {
     when: (code) => /\bnfc\s*\./.test(code) && /\b(?:Digital|Analog)Pin\.P(?:19|20)\b/.test(code),
     warn: "The NFC reader uses P19 (SCL) and P20 (SDA) for I2C. Another block on P19 or P20 will stop the reader working. Move it to another pin."

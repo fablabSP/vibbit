@@ -530,3 +530,38 @@ test("conversational prompt carries clarify and scope rules", () => {
   const plain = buildSystemPrompt("microbit", { requestHint: "x" });
   assert.doesNotMatch(plain, /CLARIFYING QUESTIONS/);
 });
+
+test("new libraries are detected from code and intent", () => {
+  const ids = (code, req = "") => detectRequiredExtensions(code, req, "microbit").map((e) => (typeof e === "string" ? e : e.id));
+  assert.ok(ids("buttonClicks.onButtonDoubleClicked(buttonClicks.AorB.A, function () {})").includes("clicks"));
+  assert.ok(ids("", "double click button A").includes("clicks"));
+  assert.ok(ids("let t = timeanddate.dateTime()").includes("timeanddate"));
+  assert.ok(ids("datalogger.log(datalogger.createCV(\"a\", 1))").includes("datalogger"));
+  assert.ok(ids("WaitUntilBlocks.waitUntilButtonPressed(Button.A)").includes("waituntil"));
+  assert.ok(ids("basic.showNumber(input.soundLevelDb())").includes("sounddb"));
+  assert.ok(ids("record.startRecording(record.BlockingState.Blocking)").includes("audio-recording"));
+  assert.ok(ids("rotaryEncoderPlus.connectEncoder3()").includes("rotary"));
+});
+
+test("new libraries validate enums and arities", () => {
+  const bad = (c) => runValidateBlocks(c, "microbit").ok;
+  assert.equal(bad("buttonClicks.onButtonHeld(buttonClicks.AorB.C, function () {})"), false);
+  assert.equal(bad("timeanddate.set24HourTime(9, 30)"), false);
+  assert.equal(bad("record.startRecording(record.BlockingState.Never)"), false);
+  assert.equal(bad("rotaryEncoderPlus.onEvent(rotaryEncoderPlus.EncoderID.E3, rotaryEncoderPlus.EncoderEvent.Spin, function () {})"), false);
+});
+
+test("new library hardware warnings", () => {
+  const w = (c) => runValidateBlocks(c, "microbit").warnings.join("|");
+  assert.match(w("basic.showString(timeanddate.dateTime())"), /never set|not set|clock is never/i);
+  assert.match(w("rotaryEncoderPlus.onEvent(rotaryEncoderPlus.EncoderID.E1, rotaryEncoderPlus.EncoderEvent.Clockwise, function () {})"), /connect/);
+  assert.match(w("rotaryEncoderPlus.connectEncoder1()\nmusic.playTone(262, 100)"), /P0/);
+});
+
+test("new library dependencies are pinned and sounddb carries a probe", () => {
+  const deps = extensionDependencies(["clicks", "timeanddate", "datalogger", "waituntil", "sounddb", "audio-recording", "rotary"]);
+  assert.equal(deps["datalogger"], "*");
+  assert.match(deps["microbit-pxt-clicks"], /#v\d/);
+  assert.match(deps["ky040-rotary-encoder-plus"], /#v0\.8\.0$/);
+  assert.ok(MICROBIT_EXTENSIONS.sounddb.probe);
+});
