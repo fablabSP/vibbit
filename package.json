@@ -1,6 +1,6 @@
 {
   "name": "vibbit-extension",
-  "version": "0.2.29",
+  "version": "0.2.30",
   "private": true,
   "description": "Build tooling for the Vibbit Chrome extension",
   "scripts": {
